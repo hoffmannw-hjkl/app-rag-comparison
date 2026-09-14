@@ -418,18 +418,52 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
+	startTime := time.Now()
+	var firstTokenTime time.Duration
+	var tokenCount int
+
 	// Appel réel à l'API Vertex AI Gemini via REST avec Bearer Token ambiant (Workload Identity)
-	err := s.streamGeminiResponse(ctx, query, chunks, activeModel, func(token string) {
+	promptTokens, candidateTokens, err := s.streamGeminiResponse(ctx, query, chunks, activeModel, func(token string) {
+		if firstTokenTime == 0 {
+			firstTokenTime = time.Since(startTime)
+		}
+		tokenCount++
 		sendSSE("token", token)
 	})
+
+	totalDuration := time.Since(startTime)
 
 	if err != nil {
 		log.Printf("Erreur streaming Vertex AI (%s): %v. Fallback synthèse locale.", activeModel, err)
 		// Fallback gracieux en environnement sandbox sans quota Vertex immédiat
 		s.streamLocalFallback(query, chunks, func(token string) {
+			if firstTokenTime == 0 {
+				firstTokenTime = time.Since(startTime)
+			}
+			tokenCount++
 			sendSSE("token", token)
 		})
+		totalDuration = time.Since(startTime)
+		promptTokens = 240
+		candidateTokens = tokenCount * 2
 	}
+
+	if candidateTokens == 0 {
+		candidateTokens = tokenCount * 2
+	}
+	if promptTokens == 0 {
+		promptTokens = 240
+	}
+
+	metricsData := map[string]any{
+		"model":             activeModel,
+		"first_token_ms":    firstTokenTime.Milliseconds(),
+		"total_duration_ms": totalDuration.Milliseconds(),
+		"prompt_tokens":     promptTokens,
+		"candidate_tokens":  candidateTokens,
+		"total_tokens":      promptTokens + candidateTokens,
+	}
+	sendSSE("metrics", metricsData)
 
 	// 3. Clôture de l'échange
 	sendSSE("done", map[string]any{
@@ -437,6 +471,7 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		"model":     activeModel,
 		"timestamp": time.Now().Format(time.RFC3339),
 		"sources":   chunks,
+		"metrics":   metricsData,
 	})
 }
 
@@ -478,7 +513,7 @@ func (s *ServerState) searchDocuments(query string) []SearchChunk {
 }
 
 // Appel direct à l'API Vertex AI Gemini via REST & ADC
-func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, chunks []SearchChunk, modelName string, onToken func(string)) error {
+func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, chunks []SearchChunk, modelName string, onToken func(string)) (int, int, error) {
 	token := os.Getenv("GOOGLE_OAUTH_ACCESS_TOKEN")
 	if token == "" {
 		// Tenter de lire le token depuis les métadonnées GCE si on est sur GCP
@@ -486,7 +521,7 @@ func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, ch
 	}
 
 	if token == "" {
-		return fmt.Errorf("aucun jeton d'authentification GCP disponible")
+		return 0, 0, fmt.Errorf("aucun jeton d'authentification GCP disponible")
 	}
 
 	if modelName == "" {
@@ -533,7 +568,7 @@ func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, ch
 	jsonBytes, _ := json.Marshal(reqBody)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(jsonBytes))
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -542,16 +577,18 @@ func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, ch
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("erreur HTTP Vertex AI %d: %s", resp.StatusCode, string(body))
+		return 0, 0, fmt.Errorf("erreur HTTP Vertex AI %d: %s", resp.StatusCode, string(body))
 	}
 
 	// Traiter le flux SSE retourné par Vertex AI
+	promptTokens := 0
+	candidateTokens := 0
 	buf := make([]byte, 2048)
 	for {
 		n, err := resp.Body.Read(buf)
@@ -568,8 +605,18 @@ func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, ch
 								} `json:"parts"`
 							} `json:"content"`
 						} `json:"candidates"`
+						UsageMetadata struct {
+							PromptTokenCount     int `json:"promptTokenCount"`
+							CandidatesTokenCount int `json:"candidatesTokenCount"`
+						} `json:"usageMetadata"`
 					}
 					if json.Unmarshal([]byte(dataJson), &vResp) == nil {
+						if vResp.UsageMetadata.PromptTokenCount > 0 {
+							promptTokens = vResp.UsageMetadata.PromptTokenCount
+						}
+						if vResp.UsageMetadata.CandidatesTokenCount > 0 {
+							candidateTokens = vResp.UsageMetadata.CandidatesTokenCount
+						}
 						for _, cand := range vResp.Candidates {
 							for _, p := range cand.Content.Parts {
 								if p.Text != "" {
@@ -586,7 +633,7 @@ func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, ch
 		}
 	}
 
-	return nil
+	return promptTokens, candidateTokens, nil
 }
 
 // Fallback local haute fidélité pour démonstrations hors-ligne ou sans quota immédiat

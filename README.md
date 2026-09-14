@@ -19,15 +19,18 @@ Cette application est découplée de l'infrastructure et conçue pour se déploy
    - **Gemini 3.1 Pro Preview** : Modèle Frontier pour les analyses d'architecture denses et le raisonnement en profondeur.
    - **Gemini 3.5 Flash-Lite** : Modèle ultra-léger haute cadence pour cas d'usage à fort débit.
    - **Sélecteur Dynamique** : Bascule instantanée de modèle directement depuis la barre d'en-tête, sans redémarrage du conteneur.
-2. **Effet Avant / Après (Toggle & Split-Screen)** :
+2. **Comparateur de Modèles en Direct (Arena LLM)** :
+   - **Bataille de Modèles Côte à Côte** : Évaluez simultanément 2 modèles différents (ex: `Gemini 3.5 Flash` vs `Gemini 3.8 Flash` ou `Gemini 3.1 Pro`) sur la même requête documentaire.
+   - **Télémétrie en Temps Réel** : Benchmarks affichés sous chaque réponse : temps de réponse au premier token (TTFT en ms), durée totale de génération et nombre total de tokens consommés.
+3. **Effet Avant / Après (Recherche Mots-Clés vs RAG Groundé)** :
    - **Mode Recherche Classique** : Affiche les extraits bruts sans synthèse ni compréhension (obligeant l'utilisateur à tout lire).
    - **Mode RAG GenAI** : Génère une synthèse rédigée et sourcée avec citations interactives.
-3. **Transparence du Grounding** :
+4. **Transparence du Grounding** :
    - L'interface affiche en temps réel les documents et passages consultés avant de streamer la réponse finale.
-4. **Gestion Documentaire à la Volée** :
+5. **Gestion Documentaire à la Volée** :
    - Panneau latéral avec statut d'indexation (`Prêt` vs `En cours`).
    - Modal d'ajout immédiat de nouveaux textes, fichiers ou URLs dans le corpus.
-5. **Architecture Ultra-Sobre & Rapide** :
+6. **Architecture Ultra-Sobre & Rapide** :
    - Backend Go compilé en binaire statique unique (< 25 Mo).
    - Frontend intégré via `embed.FS` (zéro serveur Node.js séparé, démarrage en < 1 seconde sur Cloud Run).
    - Streaming temps réel par **Server-Sent Events (SSE)**.

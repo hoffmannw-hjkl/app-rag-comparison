@@ -30,30 +30,50 @@
       </div>
     </div>
 
-    <!-- Toggle Comparaison "Avant / Après" -->
-    <div class="flex items-center space-x-4 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
-      <button id="btn-mode-rag" onclick="setMode('rag')" class="px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-blue-600 text-white shadow-sm flex items-center space-x-2">
+    <!-- Mode Switcher : Vue RAG / RAG vs Search / Comparateur de Modèles -->
+    <div class="flex items-center space-x-1.5 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
+      <button id="btn-mode-rag" onclick="setMode('rag')" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-blue-600 text-white shadow-sm flex items-center space-x-1.5">
         <i class="fa-solid fa-wand-magic-sparkles text-cyan-300"></i>
-        <span>Vue RAG Synthétisé</span>
+        <span>Vue RAG</span>
       </button>
-      <button id="btn-mode-split" onclick="setMode('split')" class="px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 text-slate-400 hover:text-white flex items-center space-x-2">
+      <button id="btn-mode-split" onclick="setMode('split')" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 text-slate-400 hover:text-white flex items-center space-x-1.5">
         <i class="fa-solid fa-columns"></i>
-        <span>Comparaison Côte à Côte</span>
+        <span>RAG vs Recherche</span>
+      </button>
+      <button id="btn-mode-models" onclick="setMode('models')" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 text-slate-400 hover:text-white flex items-center space-x-1.5">
+        <i class="fa-solid fa-scale-balanced text-purple-400"></i>
+        <span>Comparateur de Modèles</span>
       </button>
     </div>
 
-    <!-- Sélecteur de Modèle Gemini 3 -->
-    <div class="flex items-center space-x-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800">
-      <i class="fa-solid fa-microchip text-indigo-400 text-xs"></i>
-      <label for="model-selector" class="text-[11px] text-slate-400 font-medium">Modèle :</label>
-      <select id="model-selector" onchange="onModelChange(this.value)" class="bg-transparent text-xs text-indigo-300 font-semibold focus:outline-none cursor-pointer">
-        <option value="gemini-3.5-flash" class="bg-slate-900 text-slate-100">Gemini 3.5 Flash (Défaut)</option>
-        <option value="gemini-3.8-flash" class="bg-slate-900 text-slate-100">Gemini 3.8 Flash (Agentic)</option>
-        <option value="gemini-3.1-pro-preview" class="bg-slate-900 text-slate-100">Gemini 3.1 Pro (Frontier)</option>
-        <option value="gemini-3.5-flash-lite" class="bg-slate-900 text-slate-100">Gemini 3.5 Flash-Lite (Fast)</option>
-        <option value="gemini-3.7-flash" class="bg-slate-900 text-slate-100">Gemini 3.7 Flash</option>
-        <option value="gemini-2.5-flash" class="bg-slate-900 text-slate-100">Gemini 2.5 Flash (Legacy)</option>
-      </select>
+    <!-- Sélecteurs de Modèles Gemini 3 -->
+    <div class="flex items-center space-x-2">
+      <!-- Modèle A (Principal / Défaut) -->
+      <div class="flex items-center space-x-1.5 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800">
+        <i class="fa-solid fa-microchip text-indigo-400 text-xs"></i>
+        <label id="label-model-a" for="model-selector" class="text-[11px] text-slate-400 font-medium">Modèle :</label>
+        <select id="model-selector" onchange="onModelChange(this.value)" class="bg-transparent text-xs text-indigo-300 font-semibold focus:outline-none cursor-pointer">
+          <option value="gemini-3.5-flash" class="bg-slate-900 text-slate-100">Gemini 3.5 Flash (Défaut)</option>
+          <option value="gemini-3.8-flash" class="bg-slate-900 text-slate-100">Gemini 3.8 Flash (Agentic)</option>
+          <option value="gemini-3.1-pro-preview" class="bg-slate-900 text-slate-100">Gemini 3.1 Pro (Frontier)</option>
+          <option value="gemini-3.5-flash-lite" class="bg-slate-900 text-slate-100">Gemini 3.5 Flash-Lite (Fast)</option>
+          <option value="gemini-3.7-flash" class="bg-slate-900 text-slate-100">Gemini 3.7 Flash</option>
+          <option value="gemini-2.5-flash" class="bg-slate-900 text-slate-100">Gemini 2.5 Flash (Legacy)</option>
+        </select>
+      </div>
+
+      <!-- Modèle B (Affiché uniquement en mode Comparateur de Modèles) -->
+      <div id="model-b-container" class="hidden flex items-center space-x-1.5 bg-slate-950 px-3 py-1.5 rounded-xl border border-purple-900/60 bg-purple-950/20">
+        <span class="text-[11px] font-bold text-purple-400">VS</span>
+        <select id="model-b-selector" class="bg-transparent text-xs text-purple-300 font-semibold focus:outline-none cursor-pointer">
+          <option value="gemini-3.8-flash" class="bg-slate-900 text-slate-100">Gemini 3.8 Flash (Agentic)</option>
+          <option value="gemini-3.1-pro-preview" class="bg-slate-900 text-slate-100">Gemini 3.1 Pro (Frontier)</option>
+          <option value="gemini-3.5-flash" class="bg-slate-900 text-slate-100">Gemini 3.5 Flash</option>
+          <option value="gemini-3.5-flash-lite" class="bg-slate-900 text-slate-100">Gemini 3.5 Flash-Lite (Fast)</option>
+          <option value="gemini-3.7-flash" class="bg-slate-900 text-slate-100">Gemini 3.7 Flash</option>
+          <option value="gemini-2.5-flash" class="bg-slate-900 text-slate-100">Gemini 2.5 Flash (Legacy)</option>
+        </select>
+      </div>
     </div>
 
     <!-- Badges Statut Infra -->
@@ -112,7 +132,15 @@
           <div class="bg-slate-900 border border-slate-800 rounded-2xl rounded-tl-none p-4 text-sm text-slate-200 shadow-sm leading-relaxed">
             👋 Bonjour ! Je suis votre assistant groundé sur la documentation de votre architecture Google Cloud.
             <br><br>
-            Posez une question technique (ex: <em>"Comment est gérée la sécurité WAF ?"</em> ou <em>"Quels sont les seuils FinOps ?"</em>). Utilisez le bouton en haut pour comparer en direct le résultat d'une <strong>recherche classique par mots-clés</strong> face à la <strong>synthèse intelligente RAG</strong>.
+            Posez une question technique (ex: <em>"Comment est gérée la sécurité WAF ?"</em> ou <em>"Quels sont les seuils FinOps ?"</em>).
+            <div class="mt-3 pt-3 border-t border-slate-800 text-xs text-slate-400 space-y-1">
+              <p>💡 <strong>3 modes de démonstration disponibles dans la barre d'en-tête :</strong></p>
+              <ul class="list-disc list-inside space-y-0.5 text-slate-300">
+                <li><strong>Vue RAG</strong> : Synthèse sourcée avec le modèle actif & métriques télémétriques.</li>
+                <li><strong>RAG vs Recherche</strong> : Comparatif côte à côte avec une recherche par mots-clés traditionnelle.</li>
+                <li><strong>Comparateur de Modèles (Arena)</strong> : Évaluez en direct deux modèles (ex: <em>Gemini 3.5 Flash</em> vs <em>Gemini 3.8 Flash</em> ou <em>Gemini 3.1 Pro</em>) avec benchmarks de latence (TTFT), durée totale et consommation de tokens.</li>
+              </ul>
+            </div>
           </div>
         </div>
       </div>
@@ -198,20 +226,31 @@
   </div>
 
   <script>
-    let currentMode = 'rag'; // 'rag' ou 'split'
-    let selectedModel = 'gemini-2.5-flash';
+    let currentMode = 'rag'; // 'rag', 'split' ou 'models'
+    let selectedModel = 'gemini-3.5-flash';
+    let availableModelsList = [];
 
     function setMode(mode) {
       currentMode = mode;
       const btnRag = document.getElementById('btn-mode-rag');
       const btnSplit = document.getElementById('btn-mode-split');
-      
-      if (mode === 'rag') {
-        btnRag.className = 'px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-blue-600 text-white shadow-sm flex items-center space-x-2';
-        btnSplit.className = 'px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 text-slate-400 hover:text-white flex items-center space-x-2';
+      const btnModels = document.getElementById('btn-mode-models');
+      const modelBContainer = document.getElementById('model-b-container');
+      const labelModelA = document.getElementById('label-model-a');
+
+      const activeClass = 'px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-blue-600 text-white shadow-sm flex items-center space-x-1.5';
+      const inactiveClass = 'px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 text-slate-400 hover:text-white flex items-center space-x-1.5';
+
+      btnRag.className = mode === 'rag' ? activeClass : inactiveClass;
+      btnSplit.className = mode === 'split' ? activeClass : inactiveClass;
+      btnModels.className = mode === 'models' ? 'px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-purple-600 text-white shadow-sm flex items-center space-x-1.5' : inactiveClass;
+
+      if (mode === 'models') {
+        modelBContainer.classList.remove('hidden');
+        labelModelA.innerText = "Modèle A :";
       } else {
-        btnSplit.className = 'px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-blue-600 text-white shadow-sm flex items-center space-x-2';
-        btnRag.className = 'px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 text-slate-400 hover:text-white flex items-center space-x-2';
+        modelBContainer.classList.add('hidden');
+        labelModelA.innerText = "Modèle :";
       }
     }
 
@@ -219,14 +258,28 @@
       try {
         const res = await fetch('/api/models');
         const data = await res.json();
-        const selector = document.getElementById('model-selector');
+        const selectorA = document.getElementById('model-selector');
+        const selectorB = document.getElementById('model-b-selector');
         if (data.models && data.models.length > 0) {
-          selector.innerHTML = data.models.map(m => `
-            <option value="${m.id}" ${m.id === data.current ? 'selected' : ''} class="bg-slate-900 text-slate-100">
+          availableModelsList = data.models;
+          const optionsHtml = data.models.map(m => `
+            <option value="${m.id}" class="bg-slate-900 text-slate-100">
               ${m.name} (${m.category})
             </option>
           `).join('');
-          selectedModel = data.current;
+
+          selectorA.innerHTML = optionsHtml;
+          selectorB.innerHTML = optionsHtml;
+
+          selectorA.value = data.current || "gemini-3.5-flash";
+          selectedModel = selectorA.value;
+
+          // Sélectionner par défaut gemini-3.8-flash ou gemini-3.1-pro pour le modèle B
+          if (selectorB.querySelector('option[value="gemini-3.8-flash"]')) {
+            selectorB.value = "gemini-3.8-flash";
+          } else if (data.models.length > 1) {
+            selectorB.value = data.models[1].id;
+          }
         }
       } catch (err) {
         console.warn('Impossible de charger les modèles dynamiques:', err);
@@ -388,7 +441,9 @@
       input.value = '';
       appendUserMessage(query);
 
-      if (currentMode === 'split') {
+      if (currentMode === 'models') {
+        renderModelsComparison(query);
+      } else if (currentMode === 'split') {
         renderSplitResponse(query);
       } else {
         renderRAGResponse(query);
@@ -408,24 +463,37 @@
       c.scrollTop = c.scrollHeight;
     }
 
+    function getModelName(id) {
+      const m = availableModelsList.find(item => item.id === id);
+      return m ? m.name : id;
+    }
+
     async function renderRAGResponse(query) {
       const c = document.getElementById('messages-container');
       const resDiv = document.createElement('div');
       resDiv.className = 'flex items-start space-x-3 max-w-3xl';
       
       const contentId = 'rag-' + Date.now();
+      const modelDisplayName = getModelName(selectedModel);
+
       resDiv.innerHTML = `
         <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center flex-shrink-0 text-white text-sm">
           <i class="fa-solid fa-wand-magic-sparkles text-cyan-300"></i>
         </div>
         <div class="flex-1 bg-slate-900 border border-slate-800 rounded-2xl rounded-tl-none p-4 text-sm text-slate-200 shadow-sm space-y-3">
+          <div class="flex items-center justify-between pb-2 border-b border-slate-800/80">
+            <span class="text-xs font-bold text-cyan-400 flex items-center space-x-1.5">
+              <i class="fa-solid fa-brain text-xs"></i>
+              <span>Synthèse RAG (${modelDisplayName})</span>
+            </span>
+            <span id="telemetry-${contentId}" class="text-[10px] text-slate-500 font-mono"></span>
+          </div>
           <div id="status-${contentId}" class="text-xs text-cyan-400 flex items-center space-x-2 animate-pulse">
             <i class="fa-solid fa-circle-notch fa-spin"></i>
             <span>Consultation du corpus documentaire...</span>
           </div>
           <div id="retrieval-${contentId}" class="hidden flex-wrap gap-2 text-xs"></div>
           <div id="${contentId}" class="leading-relaxed whitespace-pre-wrap font-normal"></div>
-          <div id="sources-${contentId}" class="hidden pt-3 border-t border-slate-800/80 text-xs"></div>
         </div>
       `;
       c.appendChild(resDiv);
@@ -435,7 +503,7 @@
       const textEl = document.getElementById(contentId);
       const statusEl = document.getElementById(`status-${contentId}`);
       const retrievalEl = document.getElementById(`retrieval-${contentId}`);
-      const sourcesEl = document.getElementById(`sources-${contentId}`);
+      const telemetryEl = document.getElementById(`telemetry-${contentId}`);
 
       eventSource.addEventListener('status', (e) => {
         const d = JSON.parse(e.data);
@@ -463,8 +531,12 @@
         c.scrollTop = c.scrollHeight;
       });
 
+      eventSource.addEventListener('metrics', (e) => {
+        const m = JSON.parse(e.data);
+        telemetryEl.innerHTML = `⚡ 1er token: ${m.first_token_ms}ms | Total: ${m.total_duration_ms}ms | ${m.total_tokens} tokens`;
+      });
+
       eventSource.addEventListener('done', (e) => {
-        const d = JSON.parse(e.data);
         statusEl.remove();
         eventSource.close();
       });
@@ -477,13 +549,12 @@
       
       const ragId = 'split-rag-' + Date.now();
       const classicId = 'split-classic-' + Date.now();
-
-      const modelDisplayName = selectedModel === 'gemini-2.5-pro' ? 'Gemini 2.5 Pro' : 'Gemini 2.5 Flash';
+      const modelDisplayName = getModelName(selectedModel);
 
       splitDiv.innerHTML = `
         <div class="flex items-center justify-between pb-3 border-b border-slate-800 text-xs">
           <span class="font-bold text-slate-200">🔍 Comparatif Avant / Après : "${query}"</span>
-          <span class="text-slate-400">Effet Démonstratif Immédiat</span>
+          <span class="text-slate-400">Recherche Classique vs RAG GenAI</span>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           
@@ -501,9 +572,12 @@
 
           <!-- Colonne Droite : RAG Groundé GenAI -->
           <div class="bg-slate-950 border border-blue-500/30 rounded-xl p-4 space-y-3 shadow-lg shadow-blue-500/5">
-            <div class="flex items-center space-x-2 text-xs font-bold text-cyan-400">
-              <i class="fa-solid fa-wand-magic-sparkles"></i>
-              <span>RAG Synthétisé (${modelDisplayName} + Grounding)</span>
+            <div class="flex items-center justify-between">
+              <div class="flex items-center space-x-2 text-xs font-bold text-cyan-400">
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+                <span>RAG Synthétisé (${modelDisplayName})</span>
+              </div>
+              <span id="telemetry-${ragId}" class="text-[10px] text-slate-500 font-mono"></span>
             </div>
             <p class="text-[11px] text-slate-400 italic">Compréhension, synthèse et citations contextuelles :</p>
             <div id="${ragId}" class="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap"></div>
@@ -534,13 +608,153 @@
       // 2. Stream RAG
       const eventSource = new EventSource(`/api/chat/stream?q=${encodeURIComponent(query)}&model=${encodeURIComponent(selectedModel)}`);
       const ragEl = document.getElementById(ragId);
+      const telemetryEl = document.getElementById(`telemetry-${ragId}`);
 
       eventSource.addEventListener('token', (e) => {
         ragEl.innerHTML += JSON.parse(e.data);
         c.scrollTop = c.scrollHeight;
       });
 
+      eventSource.addEventListener('metrics', (e) => {
+        const m = JSON.parse(e.data);
+        telemetryEl.innerHTML = `⚡ ${m.total_duration_ms}ms | ${m.total_tokens} toks`;
+      });
+
       eventSource.addEventListener('done', () => eventSource.close());
+    }
+
+    // 3. Comparateur Multi-Modèles Arena : A vs B simultané
+    async function renderModelsComparison(query) {
+      const c = document.getElementById('messages-container');
+      const modelA = selectedModel;
+      const modelB = document.getElementById('model-b-selector').value;
+
+      const nameA = getModelName(modelA);
+      const nameB = getModelName(modelB);
+
+      const arenaDiv = document.createElement('div');
+      arenaDiv.className = 'w-full bg-slate-900/60 border border-purple-900/40 rounded-2xl p-5 space-y-4 shadow-xl shadow-purple-950/10';
+      
+      const idA = 'arena-a-' + Date.now();
+      const idB = 'arena-b-' + Date.now();
+
+      arenaDiv.innerHTML = `
+        <div class="flex items-center justify-between pb-3 border-b border-slate-800 text-xs">
+          <div class="flex items-center space-x-2">
+            <span class="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 font-bold border border-purple-500/30">
+              <i class="fa-solid fa-scale-balanced mr-1"></i> Arena Modèles
+            </span>
+            <span class="font-bold text-slate-200">"${query}"</span>
+          </div>
+          <span class="text-slate-400 text-[11px]">Comparaison directe de raisonnement, latence & tokens</span>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+          
+          <!-- Colonne Modèle A -->
+          <div class="bg-slate-950 border border-blue-500/30 rounded-xl p-4 space-y-3 flex flex-col justify-between">
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <div class="flex items-center space-x-2 text-xs font-bold text-blue-400">
+                  <span class="w-5 h-5 rounded-full bg-blue-600/30 border border-blue-500/50 flex items-center justify-center text-[10px]">A</span>
+                  <span>${nameA}</span>
+                </div>
+                <span id="badge-${idA}" class="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 animate-pulse">
+                  Streaming...
+                </span>
+              </div>
+              <div id="${idA}" class="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap min-h-[120px]"></div>
+            </div>
+            
+            <div id="metrics-${idA}" class="pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-2 text-center text-[11px] font-mono text-slate-400">
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[10px] text-slate-500 uppercase">1er Token</div>
+                <div class="font-bold text-slate-200" id="ttft-${idA}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[10px] text-slate-500 uppercase">Durée</div>
+                <div class="font-bold text-slate-200" id="duration-${idA}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[10px] text-slate-500 uppercase">Tokens</div>
+                <div class="font-bold text-slate-200" id="tokens-${idA}">--</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Colonne Modèle B -->
+          <div class="bg-slate-950 border border-purple-500/30 rounded-xl p-4 space-y-3 flex flex-col justify-between">
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <div class="flex items-center space-x-2 text-xs font-bold text-purple-400">
+                  <span class="w-5 h-5 rounded-full bg-purple-600/30 border border-purple-500/50 flex items-center justify-center text-[10px]">B</span>
+                  <span>${nameB}</span>
+                </div>
+                <span id="badge-${idB}" class="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 animate-pulse">
+                  Streaming...
+                </span>
+              </div>
+              <div id="${idB}" class="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap min-h-[120px]"></div>
+            </div>
+
+            <div id="metrics-${idB}" class="pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-2 text-center text-[11px] font-mono text-slate-400">
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[10px] text-slate-500 uppercase">1er Token</div>
+                <div class="font-bold text-slate-200" id="ttft-${idB}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[10px] text-slate-500 uppercase">Durée</div>
+                <div class="font-bold text-slate-200" id="duration-${idB}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[10px] text-slate-500 uppercase">Tokens</div>
+                <div class="font-bold text-slate-200" id="tokens-${idB}">--</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      `;
+      c.appendChild(arenaDiv);
+      c.scrollTop = c.scrollHeight;
+
+      // Lancement simultané des streams pour Modèle A et Modèle B
+      const streamToColumn = (mId, containerId, badgeId, ttftId, durationId, tokensId) => {
+        const textEl = document.getElementById(containerId);
+        const badgeEl = document.getElementById(badgeId);
+        const ttftEl = document.getElementById(ttftId);
+        const durEl = document.getElementById(durationId);
+        const tokEl = document.getElementById(tokensId);
+
+        const es = new EventSource(`/api/chat/stream?q=${encodeURIComponent(query)}&model=${encodeURIComponent(mId)}`);
+
+        es.addEventListener('token', (e) => {
+          textEl.innerHTML += JSON.parse(e.data);
+          c.scrollTop = c.scrollHeight;
+        });
+
+        es.addEventListener('metrics', (e) => {
+          const m = JSON.parse(e.data);
+          ttftEl.innerText = `${m.first_token_ms}ms`;
+          durEl.innerText = `${m.total_duration_ms}ms`;
+          tokEl.innerText = `${m.total_tokens}`;
+        });
+
+        es.addEventListener('done', () => {
+          badgeEl.className = 'text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+          badgeEl.innerText = 'Terminé';
+          es.close();
+        });
+
+        es.addEventListener('error', () => {
+          badgeEl.className = 'text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20';
+          badgeEl.innerText = 'Repli local';
+          es.close();
+        });
+      };
+
+      streamToColumn(modelA, idA, `badge-${idA}`, `ttft-${idA}`, `duration-${idA}`, `tokens-${idA}`);
+      streamToColumn(modelB, idB, `badge-${idB}`, `ttft-${idB}`, `duration-${idB}`, `tokens-${idB}`);
     }
 
     // Chargement initial

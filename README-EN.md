@@ -19,15 +19,18 @@ This application is decoupled from infrastructure and ready for instant deployme
    - **Gemini 3.1 Pro Preview**: Deep reasoning model for exhaustive technical synthesis and architecture reviews.
    - **Gemini 3.5 Flash-Lite**: High-throughput, ultra-fast model for demanding low-latency RAG workloads.
    - **Dynamic Switching**: Change models on-the-fly directly from the header dropdown without restarting the app.
-2. **Before / After Effect (Toggle & Split-Screen)**:
+2. **Live Multi-Model Arena (Side-by-Side LLM Comparison)**:
+   - **Parallel Model Evaluation**: Run and compare two different Gemini models simultaneously (e.g. `Gemini 3.5 Flash` vs `Gemini 3.8 Flash` or `Gemini 3.1 Pro`) on the exact same grounded query.
+   - **Real-time Telemetry & Benchmarks**: Granular latency and consumption cards displaying time-to-first-token (TTFT in ms), total generation duration, and total token count.
+3. **Before / After Effect (Classic Search vs Grounded RAG)**:
    - **Classic Search Mode**: Displays raw excerpts without synthesis (forcing the user to read through all passages).
    - **GenAI RAG Mode**: Generates an authoritative, cited synthesis with interactive references.
-3. **Grounding Transparency**:
+4. **Grounding Transparency**:
    - Live display of documents and retrieved passages before streaming the final response.
-4. **On-the-fly Document Management**:
+5. **On-the-fly Document Management**:
    - Sidebar panel with indexing status (`Ready` vs `Indexing`).
    - Modal to add new text, files, or URLs directly into the corpus.
-5. **Ultra-Lean & Fast Architecture**:
+6. **Ultra-Lean & Fast Architecture**:
    - Go backend compiled into a single static binary (< 25 MB).
    - Frontend embedded via `embed.FS` (zero separate Node.js server, cold start in < 1 second on Cloud Run).
    - Real-time streaming via **Server-Sent Events (SSE)**.
