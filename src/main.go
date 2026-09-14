@@ -1,32 +1,53 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"compress/flate"
+	"compress/zlib"
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 //go:embed web/static/*
 var staticFS embed.FS
 
+// Chunk représente un passage découpé d'un document, unité de base du retrieval.
+type Chunk struct {
+	Index int    `json:"index"`
+	Text  string `json:"text"`
+}
+
 type Document struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	Source    string    `json:"source"`
-	Status    string    `json:"status"` // "ready", "indexing"
-	Content   string    `json:"content"`
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Source string `json:"source"`
+	Status string `json:"status"` // "ready", "indexing"
+	// Content et Chunks ne sont jamais sérialisés vers le client : ils peuvent peser
+	// plusieurs Mo par document et l'UI n'exploite que le snippet.
+	Content   string    `json:"-"`
+	Chunks    []Chunk   `json:"-"`
 	Snippet   string    `json:"snippet"`
+	SizeBytes int       `json:"size_bytes"`
+	NumChunks int       `json:"num_chunks"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -35,6 +56,7 @@ type SearchChunk struct {
 	Snippet       string  `json:"snippet"`
 	Score         float64 `json:"score"`
 	SourceURI     string  `json:"source_uri"`
+	ChunkIndex    int     `json:"chunk_index"`
 }
 
 type ModelInfo struct {
@@ -117,33 +139,21 @@ func main() {
 		region:    region,
 		modelName: modelName,
 		documents: []Document{
-			{
-				ID:        "doc-1",
-				Title:     "Google Cloud Architecture - Elevate & Spark Standards",
-				Source:    "gs://internal-docs/elevate-guide.pdf",
-				Status:    "ready",
-				Content:   "Le programme Elevate & Spark impose une architecture sécurisée sans adresses IP publiques sur les machines de calcul. Les sorties Internet sont déléguées à un Cloud NAT. L'exposition externe requiert impérativement Cloud Armor WAF avec le jeu de règles OWASP Top 10 et du Rate Limiting.",
-				Snippet:   "Architecture sécurisée sans adresses IP publiques. Sorties Internet via Cloud NAT et exposition avec Cloud Armor WAF...",
-				CreatedAt: time.Now().Add(-2 * time.Hour),
-			},
-			{
-				ID:        "doc-2",
-				Title:     "FinOps & Budget Alerting Policy",
-				Source:    "gs://internal-docs/finops-policy-2026.pdf",
-				Status:    "ready",
-				Content:   "Toutes les démonstrations doivent déclarer un budget plafonné via l'API Cloud Billing Budget. Les seuils d'alerte configurés sont 50%, 75%, 90% et 100% de la consommation réelle ainsi que 100% de la projection prévisionnelle. La notification s'effectue par email via Cloud Monitoring.",
-				Snippet:   "Budget plafonné via Cloud Billing Budget avec seuils d'alerte à 50%, 75%, 90% et 100%...",
-				CreatedAt: time.Now().Add(-1 * time.Hour),
-			},
-			{
-				ID:        "doc-3",
-				Title:     "Résilience SRE - BigQuery Schema Drift",
-				Source:    "https://cloud.google.com/architecture/sre-logging-best-practices",
-				Status:    "ready",
-				Content:   "L'exportation de journaux Kubernetes vers BigQuery nécessite des filtres stricts d'exclusion pour éliminer les champs polymorphes tels que jsonPayload.address qui provoquent l'erreur table_invalid_schema. Les pods de kube-system doivent être filtrés.",
-				Snippet:   "Filtres d'exclusion stricts pour éliminer jsonPayload.address et éviter l'erreur table_invalid_schema...",
-				CreatedAt: time.Now().Add(-30 * time.Minute),
-			},
+			newDocument("doc-1",
+				"Google Cloud Architecture - Elevate & Spark Standards",
+				"gs://internal-docs/elevate-guide.pdf",
+				"Le programme Elevate & Spark impose une architecture sécurisée sans adresses IP publiques sur les machines de calcul. Les sorties Internet sont déléguées à un Cloud NAT. L'exposition externe requiert impérativement Cloud Armor WAF avec le jeu de règles OWASP Top 10 et du Rate Limiting.",
+				time.Now().Add(-2*time.Hour)),
+			newDocument("doc-2",
+				"FinOps & Budget Alerting Policy",
+				"gs://internal-docs/finops-policy-2026.pdf",
+				"Toutes les démonstrations doivent déclarer un budget plafonné via l'API Cloud Billing Budget. Les seuils d'alerte configurés sont 50%, 75%, 90% et 100% de la consommation réelle ainsi que 100% de la projection prévisionnelle. La notification s'effectue par email via Cloud Monitoring.",
+				time.Now().Add(-1*time.Hour)),
+			newDocument("doc-3",
+				"Résilience SRE - BigQuery Schema Drift",
+				"https://cloud.google.com/architecture/sre-logging-best-practices",
+				"L'exportation de journaux Kubernetes vers BigQuery nécessite des filtres stricts d'exclusion pour éliminer les champs polymorphes tels que jsonPayload.address qui provoquent l'erreur table_invalid_schema. Les pods de kube-system doivent être filtrés.",
+				time.Now().Add(-30*time.Minute)),
 		},
 	}
 
@@ -176,10 +186,39 @@ func main() {
 		port = "8080"
 	}
 
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: mux,
+		// ReadHeaderTimeout protège contre les attaques de type Slowloris.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		// WriteTimeout doit rester à zéro : les réponses SSE sont des flux longue durée
+		// qu'un timeout d'écriture couperait en plein milieu.
+		WriteTimeout: 0,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	// Arrêt gracieux : Cloud Run envoie SIGTERM avant de retirer une instance.
+	shutdownDone := make(chan struct{})
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+		<-sigCh
+		log.Println("⏹️  Signal d'arrêt reçu, drainage des requêtes en cours...")
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Printf("Arrêt gracieux interrompu : %v", err)
+		}
+		close(shutdownDone)
+	}()
+
 	log.Printf("🚀 Chatbot RAG Démo GCP démarré sur :%s (Project: %s, Region: %s, Model: %s)", port, projectID, region, modelName)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Erreur serveur HTTP : %v", err)
 	}
+	<-shutdownDone
+	log.Println("✅ Serveur arrêté proprement")
 }
 
 // Handler Documents : liste des documents indexés
@@ -205,7 +244,12 @@ func (s *ServerState) handleModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Handler Model Switch : bascule dynamique du modèle actif
+// Handler Model Switch : valide le modèle demandé par le client.
+//
+// Ce handler ne mute délibérément PAS l'état du serveur : le modèle est un choix
+// propre à chaque utilisateur, transmis à chaque requête via le paramètre ?model=.
+// Muter s.modelName ici changerait le modèle de tous les utilisateurs connectés
+// simultanément, ce qui est un effet de bord indésirable en démonstration collective.
 func (s *ServerState) handleModelSwitch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Méthode non autorisée", http.StatusMethodNotAllowed)
@@ -220,29 +264,29 @@ func (s *ServerState) handleModelSwitch(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	valid := false
-	for _, m := range AvailableModels {
-		if m.ID == req.Model {
-			valid = true
-			break
-		}
-	}
-	if !valid {
+	if !isKnownModel(req.Model) {
 		http.Error(w, fmt.Sprintf("Modèle inconnu : %s", req.Model), http.StatusBadRequest)
 		return
 	}
 
-	s.mu.Lock()
-	s.modelName = req.Model
-	s.mu.Unlock()
-
-	log.Printf("🤖 Modèle actif mis à jour vers : %s", req.Model)
+	log.Printf("🤖 Modèle sélectionné par le client : %s", req.Model)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"status":  "ok",
 		"current": req.Model,
+		"scope":   "session",
 	})
+}
+
+// isKnownModel vérifie qu'un identifiant de modèle fait partie du catalogue exposé.
+func isKnownModel(id string) bool {
+	for _, m := range AvailableModels {
+		if m.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // Handler Upload : ajout de document (fichier uploadé, texte ou URL) à la volée
@@ -252,15 +296,19 @@ func (s *ServerState) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ParseMultipartForm ne borne que la part gardée en mémoire : sans MaxBytesReader
+	// le corps total reste illimité et peut provoquer un OOM kill sur Cloud Run.
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+
 	contentType := r.Header.Get("Content-Type")
 	var addedDocs []Document
 
 	if strings.HasPrefix(contentType, "multipart/form-data") {
-		// Support jusqu'à 50 Mo pour l'upload de multiples documents / PDFs
-		if err := r.ParseMultipartForm(50 << 20); err != nil {
-			http.Error(w, "Erreur lecture fichiers : "+err.Error(), http.StatusBadRequest)
+		if err := r.ParseMultipartForm(maxMemoryBytes); err != nil {
+			http.Error(w, "Fichiers trop volumineux ou illisibles (limite : 50 Mo au total)", http.StatusRequestEntityTooLarge)
 			return
 		}
+		defer r.MultipartForm.RemoveAll()
 
 		// Récupération des fichiers soit sous le champ 'file' soit 'files'
 		files := r.MultipartForm.File["file"]
@@ -269,53 +317,45 @@ func (s *ServerState) handleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if len(files) > 0 {
-			for _, fh := range files {
+			for i, fh := range files {
 				f, err := fh.Open()
 				if err != nil {
+					log.Printf("⚠️  Ouverture impossible pour %q : %v", fh.Filename, err)
 					continue
 				}
 				data, err := io.ReadAll(f)
 				f.Close()
 				if err != nil {
+					log.Printf("⚠️  Lecture impossible pour %q : %v", fh.Filename, err)
 					continue
 				}
 
-				rawContent := string(data)
-				extracted := rawContent
-				if strings.HasSuffix(strings.ToLower(fh.Filename), ".pdf") {
+				name := sanitizeFilename(fh.Filename)
+				extracted := string(data)
+				if strings.HasSuffix(strings.ToLower(name), ".pdf") {
 					extracted = extractTextFromPDF(data)
 				}
+				extracted = strings.ToValidUTF8(extracted, "")
 
-				doc := Document{
-					ID:        fmt.Sprintf("doc-%d-%d", time.Now().UnixNano(), len(addedDocs)),
-					Title:     fh.Filename,
-					Source:    "gs://wh-ai-blueprint-a363-rag-docs/" + fh.Filename,
-					Status:    "indexing",
-					Content:   extracted,
-					Snippet:   truncateText(extracted, 160),
-					CreatedAt: time.Now(),
-				}
-				addedDocs = append(addedDocs, doc)
+				addedDocs = append(addedDocs, newDocument(
+					fmt.Sprintf("doc-%d-%d", time.Now().UnixNano(), i),
+					name,
+					"gs://wh-ai-blueprint-a363-rag-docs/"+name,
+					extracted,
+					time.Now(),
+				))
 			}
 		} else {
 			// Saisie directe sans fichier
-			title := r.FormValue("title")
-			content := r.FormValue("content")
+			title := sanitizeFilename(r.FormValue("title"))
+			content := strings.ToValidUTF8(r.FormValue("content"), "")
 			source := r.FormValue("source")
 			if title != "" && content != "" {
 				if source == "" {
 					source = "gs://wh-ai-blueprint-a363-rag-docs/" + title
 				}
-				doc := Document{
-					ID:        fmt.Sprintf("doc-%d", time.Now().UnixNano()),
-					Title:     title,
-					Source:    source,
-					Status:    "indexing",
-					Content:   content,
-					Snippet:   truncateText(content, 160),
-					CreatedAt: time.Now(),
-				}
-				addedDocs = append(addedDocs, doc)
+				addedDocs = append(addedDocs, newDocument(
+					fmt.Sprintf("doc-%d", time.Now().UnixNano()), title, source, content, time.Now()))
 			}
 		}
 	} else {
@@ -330,21 +370,15 @@ func (s *ServerState) handleUpload(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Corps de requête invalide", http.StatusBadRequest)
 			return
 		}
-		if req.Title != "" && req.Content != "" {
+		title := sanitizeFilename(req.Title)
+		content := strings.ToValidUTF8(req.Content, "")
+		if title != "" && content != "" {
 			source := req.Source
 			if source == "" {
-				source = "gs://wh-ai-blueprint-a363-rag-docs/" + req.Title
+				source = "gs://wh-ai-blueprint-a363-rag-docs/" + title
 			}
-			doc := Document{
-				ID:        fmt.Sprintf("doc-%d", time.Now().UnixNano()),
-				Title:     req.Title,
-				Source:    source,
-				Status:    "indexing",
-				Content:   req.Content,
-				Snippet:   truncateText(req.Content, 160),
-				CreatedAt: time.Now(),
-			}
-			addedDocs = append(addedDocs, doc)
+			addedDocs = append(addedDocs, newDocument(
+				fmt.Sprintf("doc-%d", time.Now().UnixNano()), title, source, content, time.Now()))
 		}
 	}
 
@@ -353,28 +387,25 @@ func (s *ServerState) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// L'indexation (extraction + découpage) est déjà terminée à ce stade : elle est
+	// réalisée de façon synchrone dans newDocument. Les documents sont donc publiés
+	// directement en statut "ready".
+	//
+	// Une simulation d'indexation asynchrone était auparavant faite via une goroutine
+	// temporisée. C'est un anti-pattern sur Cloud Run : hors annotation
+	// `run.googleapis.com/cpu-throttling: false`, le CPU est retiré à l'instance dès
+	// que la réponse HTTP est émise. La goroutine ne reprenait donc la main qu'à la
+	// requête suivante, et les documents restaient affichés « Indexation... »
+	// pendant un temps arbitrairement long.
+	totalChunks := 0
 	s.mu.Lock()
-	for _, doc := range addedDocs {
-		s.documents = append([]Document{doc}, s.documents...)
+	for i := range addedDocs {
+		totalChunks += addedDocs[i].NumChunks
+		s.documents = append([]Document{addedDocs[i]}, s.documents...)
 	}
 	s.mu.Unlock()
 
-	// Simulation de fin d'indexation asynchrone (pour démonstration fluide)
-	for _, doc := range addedDocs {
-		go func(id string) {
-			time.Sleep(3 * time.Second)
-			s.mu.Lock()
-			for i := range s.documents {
-				if s.documents[i].ID == id {
-					s.documents[i].Status = "ready"
-					break
-				}
-			}
-			s.mu.Unlock()
-		}(doc.ID)
-	}
-
-	log.Printf("📥 %d document(s) reçu(s) et indexé(s) dans le corpus", len(addedDocs))
+	log.Printf("📥 %d document(s) reçu(s), %d chunk(s) indexé(s) dans le corpus", len(addedDocs), totalChunks)
 
 	w.Header().Set("Content-Type", "application/json")
 	if len(addedDocs) == 1 {
@@ -388,65 +419,369 @@ func (s *ServerState) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// extractTextFromPDF extrait le texte lisible d'un flux binaire PDF
+// Constantes de traitement documentaire.
+const (
+	maxUploadBytes = 50 << 20 // Taille maximale du corps d'une requête d'upload
+	maxMemoryBytes = 10 << 20 // Part de l'upload conservée en mémoire, le reste va sur disque
+	chunkSize      = 1000     // Taille cible d'un chunk, en runes
+	chunkOverlap   = 100      // Chevauchement entre deux chunks consécutifs, en runes
+	topKChunks     = 5        // Nombre de passages transmis au modèle pour le grounding
+)
+
+// Regex compilées une seule fois au chargement du package plutôt qu'à chaque appel.
+var (
+	// Opérateur d'affichage simple : (texte) Tj
+	rePDFShowText = regexp.MustCompile(`\(((?:[^()\\]|\\.)*)\)\s*(?:Tj|')`)
+	// Tableau de crénage : [(V)94(ersion)-375(Managemen)31(t)] TJ.
+	// C'est la forme employée par la plupart des générateurs (TeX, dvips) et elle
+	// porte l'essentiel du texte : l'ignorer revient à ne rien extraire du document.
+	rePDFShowArray = regexp.MustCompile(`(?s)\[((?:[^\[\]\\]|\\.)*)\]\s*TJ`)
+	// Éléments d'un tableau de crénage : chaînes littérales et valeurs de crénage.
+	rePDFArrayItem = regexp.MustCompile(`\(((?:[^()\\]|\\.)*)\)|(-?\d+(?:\.\d+)?)`)
+	// Objets stream/endstream, dont le contenu est généralement compressé
+	rePDFStream = regexp.MustCompile(`(?s)stream\r?\n?(.*?)endstream`)
+	// Caractères interdits ou risqués dans un titre de document
+	reUnsafeTitle = regexp.MustCompile(`[<>"'&\x00-\x1f\x7f]`)
+)
+
+// kerningSpaceThreshold : en deçà de cette valeur (en millièmes d'unité de texte),
+// un déplacement de crénage matérialise une espace entre deux mots. Au-dessus, il
+// s'agit d'un simple resserrement typographique à l'intérieur d'un même mot.
+const kerningSpaceThreshold = -150
+
+// extractTextFromPDF extrait le texte lisible d'un flux binaire PDF.
+//
+// Deux écueils sont traités ici. D'une part, la quasi-totalité des PDF réels
+// compressent leurs flux de contenu : une regex appliquée aux octets bruts n'y
+// trouve aucun opérateur de texte. D'autre part, appliquer cette regex au binaire
+// compressé produit des correspondances fortuites qui polluent le corpus avec des
+// séquences illisibles. On ne retient donc que des chaînes qui ressemblent
+// réellement à du texte, et on n'inspecte les octets bruts que si aucun flux n'a
+// pu être décompressé.
 func extractTextFromPDF(data []byte) string {
 	var sb strings.Builder
-	// 1. Recherche des flux de texte entre parenthèses dans les blocs textuels PDF : (Texte) Tj ou [(T)...(e)] TJ
-	reTj := regexp.MustCompile(`\(([^)]+)\)\s*(?:Tj|'|")`)
-	matches := reTj.FindAllSubmatch(data, -1)
+	decodedStreams := 0
+
+	// 1. Décompression des flux puis extraction des opérateurs de texte.
+	for _, m := range rePDFStream.FindAllSubmatch(data, -1) {
+		if len(m) < 2 {
+			continue
+		}
+		decoded, ok := inflateStream(bytes.TrimLeft(m[1], "\r\n"))
+		if !ok {
+			continue
+		}
+		decodedStreams++
+		appendPDFOperators(&sb, decoded)
+	}
+
+	// 2. Aucun flux décompressable : le document est probablement en clair.
+	//    On n'applique ce repli que dans ce cas précis, sous peine de rapatrier
+	//    des correspondances parasites issues des données binaires compressées.
+	if decodedStreams == 0 {
+		appendPDFOperators(&sb, data)
+	}
+
+	extracted := normalizeWhitespace(sb.String())
+
+	// 3. Dernier recours pour les documents en clair sans opérateur exploitable.
+	if utf8.RuneCountInString(extracted) < 40 && decodedStreams == 0 {
+		if words := extractPrintableWords(data); looksLikeText(words) {
+			extracted = words
+		}
+	}
+
+	// Le texte restant a déjà été filtré token par token : s'il est vide, c'est que
+	// le document ne porte aucune couche texte exploitable (PDF scanné ou image).
+	if extracted == "" {
+		return "[Document PDF sans couche texte extractible - OCR requis]"
+	}
+	return extracted
+}
+
+// inflateStream décompresse un flux PDF.
+//
+// La plupart des producteurs émettent du zlib (RFC 1950), mais certains écrivent
+// du DEFLATE brut (RFC 1951) sans en-tête : on tente donc les deux. Un flux non
+// compressé ou chiffré avec un filtre non supporté renvoie simplement false.
+func inflateStream(raw []byte) ([]byte, bool) {
+	if len(raw) < 2 {
+		return nil, false
+	}
+
+	if zr, err := zlib.NewReader(bytes.NewReader(raw)); err == nil {
+		decoded, err := io.ReadAll(io.LimitReader(zr, maxMemoryBytes))
+		zr.Close()
+		// Une erreur en fin de flux (troncature) reste exploitable si des octets
+		// ont déjà été décodés.
+		if len(decoded) > 0 && (err == nil || len(decoded) > 64) {
+			return decoded, true
+		}
+	}
+
+	fr := flate.NewReader(bytes.NewReader(raw))
+	decoded, err := io.ReadAll(io.LimitReader(fr, maxMemoryBytes))
+	fr.Close()
+	if len(decoded) > 64 && (err == nil || looksLikeText(string(decoded))) {
+		return decoded, true
+	}
+
+	return nil, false
+}
+
+// looksLikeText distingue du texte exploitable d'un résidu binaire.
+//
+// Le critère est la proportion de caractères imprimables : un fragment de police
+// ou d'image décompressé contient massivement des octets de contrôle, là où un
+// contenu textuel est presque intégralement lisible.
+func looksLikeText(s string) bool {
+	if s == "" {
+		return false
+	}
+
+	var printable, total int
+	for _, r := range s {
+		total++
+		if r == '\n' || r == '\t' || (r >= ' ' && r != utf8.RuneError) {
+			printable++
+		}
+	}
+
+	return total > 0 && float64(printable)/float64(total) >= 0.9
+}
+
+// newDocument construit un document prêt à être indexé : découpage en chunks,
+// calcul du snippet et des métadonnées. C'est le point d'entrée unique de
+// l'ingestion, qu'elle provienne d'un upload, d'un collage de texte ou du seed.
+func newDocument(id, title, source, content string, createdAt time.Time) Document {
+	content = strings.ToValidUTF8(content, "")
+	chunks := chunkText(content)
+
+	return Document{
+		ID:        id,
+		Title:     title,
+		Source:    source,
+		Status:    "ready",
+		Content:   content,
+		Chunks:    chunks,
+		Snippet:   truncateText(normalizeWhitespace(content), 160),
+		SizeBytes: len(content),
+		NumChunks: len(chunks),
+		CreatedAt: createdAt,
+	}
+}
+
+// chunkText découpe un texte en passages de taille bornée avec chevauchement.
+//
+// Le chevauchement évite qu'une information à cheval sur deux chunks soit perdue
+// pour le retrieval. Le découpage s'opère sur les runes et non sur les octets,
+// afin de ne jamais couper un caractère accentué en deux.
+func chunkText(text string) []Chunk {
+	text = normalizeWhitespace(text)
+	if text == "" {
+		return nil
+	}
+
+	runes := []rune(text)
+	if len(runes) <= chunkSize {
+		return []Chunk{{Index: 0, Text: text}}
+	}
+
+	var chunks []Chunk
+	step := chunkSize - chunkOverlap
+	for start, idx := 0, 0; start < len(runes); start, idx = start+step, idx+1 {
+		end := start + chunkSize
+		if end > len(runes) {
+			end = len(runes)
+		}
+		chunks = append(chunks, Chunk{Index: idx, Text: string(runes[start:end])})
+		if end == len(runes) {
+			break
+		}
+	}
+	return chunks
+}
+
+// sanitizeFilename neutralise les noms de fichiers hostiles.
+//
+// Le nom provient intégralement du client : il sert de titre affiché dans l'UI et
+// de segment d'URI GCS. On supprime donc toute composante de chemin (traversée de
+// répertoire) ainsi que les caractères permettant une injection HTML.
+func sanitizeFilename(name string) string {
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = filepath.Base(strings.TrimSpace(name))
+	if name == "." || name == "/" || name == ".." {
+		return ""
+	}
+	name = reUnsafeTitle.ReplaceAllString(name, "")
+	name = strings.ToValidUTF8(name, "")
+	return truncateText(strings.TrimSpace(name), 200)
+}
+
+// appendPDFOperators extrait le texte des opérateurs d'affichage d'un flux.
+//
+// Les deux formes d'affichage sont traitées : l'opérateur simple `(texte) Tj` et
+// le tableau de crénage `[(V)94(ersion)] TJ`. Les correspondances sont parcourues
+// dans l'ordre de leur position afin de préserver l'ordre de lecture du document.
+//
+// Chaque chaîne candidate est validée : sur un flux binaire, la regex produit des
+// correspondances fortuites qu'il faut écarter avant qu'elles n'atteignent le corpus.
+func appendPDFOperators(sb *strings.Builder, content []byte) {
+	type match struct {
+		pos  int
+		text string
+	}
+	var matches []match
+
+	for _, idx := range rePDFShowText.FindAllSubmatchIndex(content, -1) {
+		if idx[2] < 0 {
+			continue
+		}
+		matches = append(matches, match{pos: idx[0], text: cleanPDFString(string(content[idx[2]:idx[3]]))})
+	}
+
+	for _, idx := range rePDFShowArray.FindAllSubmatchIndex(content, -1) {
+		if idx[2] < 0 {
+			continue
+		}
+		matches = append(matches, match{pos: idx[0], text: decodeKerningArray(content[idx[2]:idx[3]])})
+	}
+
+	sort.Slice(matches, func(i, j int) bool { return matches[i].pos < matches[j].pos })
+
 	for _, m := range matches {
-		if len(m) > 1 {
-			txt := cleanPDFString(string(m[1]))
-			if len(txt) > 0 {
-				sb.WriteString(txt)
+		if m.text == "" || !looksLikeText(m.text) {
+			continue
+		}
+		sb.WriteString(m.text)
+		sb.WriteString(" ")
+	}
+}
+
+// decodeKerningArray reconstitue le texte d'un tableau d'affichage TJ.
+//
+// Un tableau alterne chaînes littérales et déplacements de crénage. Les
+// déplacements suffisamment négatifs correspondent à des espaces inter-mots, que
+// le fichier ne matérialise pas autrement : sans cette reconstitution, le texte
+// extrait serait une suite de mots agglutinés.
+func decodeKerningArray(array []byte) string {
+	var sb strings.Builder
+
+	for _, m := range rePDFArrayItem.FindAllSubmatch(array, -1) {
+		switch {
+		case m[1] != nil:
+			sb.WriteString(cleanPDFString(string(m[1])))
+		case len(m[2]) > 0:
+			if kern, err := strconv.ParseFloat(string(m[2]), 64); err == nil && kern <= kerningSpaceThreshold {
 				sb.WriteString(" ")
 			}
 		}
 	}
 
-	extracted := strings.TrimSpace(sb.String())
-	// Si peu ou pas de texte extrait par syntaxe directe, extraction des séquences textuelles ASCII/UTF8 nettoyées
-	if len(extracted) < 40 {
-		var words []string
-		var cur []byte
-		for _, b := range data {
-			if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == ' ' || b == '.' || b == ',' || b == '-' || b == '/' || b == ':' || b == '@' || b == '_' {
-				cur = append(cur, b)
-			} else {
-				if len(cur) >= 3 {
-					w := strings.TrimSpace(string(cur))
-					if len(w) >= 3 && !isPDFInternalKeyword(w) {
-						words = append(words, w)
-					}
-				}
-				cur = cur[:0]
-			}
-		}
+	return strings.TrimSpace(sb.String())
+}
+
+// extractPrintableWords récupère les suites de caractères imprimables d'un binaire.
+func extractPrintableWords(data []byte) string {
+	var words []string
+	var cur []byte
+
+	flush := func() {
 		if len(cur) >= 3 {
 			w := strings.TrimSpace(string(cur))
 			if len(w) >= 3 && !isPDFInternalKeyword(w) {
 				words = append(words, w)
 			}
 		}
-		if len(words) > 0 {
-			extracted = strings.Join(words, " ")
+		cur = cur[:0]
+	}
+
+	for _, b := range data {
+		switch {
+		case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9',
+			b == ' ', b == '.', b == ',', b == '-', b == '/', b == ':', b == '@', b == '_':
+			cur = append(cur, b)
+		default:
+			flush()
+		}
+	}
+	flush()
+
+	return strings.Join(words, " ")
+}
+
+// normalizeWhitespace réduit les espaces multiples, retire les caractères de
+// contrôle et garantit une sortie UTF-8 valide, seule forme sérialisable en JSON.
+func normalizeWhitespace(s string) string {
+	s = strings.ToValidUTF8(s, "")
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t' || r == '\r':
+			return ' '
+		case r < ' ' || r == 0x7f:
+			return -1 // Caractère de contrôle : supprimé
+		default:
+			return r
+		}
+	}, s)
+	return strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+}
+
+// cleanPDFString décode les séquences d'échappement d'une chaîne littérale PDF.
+//
+// La spécification définit les échappements usuels (\n, \t, \( ...) mais aussi les
+// codes octaux \ddd, largement utilisés pour les parenthèses et les caractères
+// non ASCII. Sans ce décodage, le texte extrait contient des littéraux « \050 »
+// au lieu des caractères correspondants.
+func cleanPDFString(s string) string {
+	var sb strings.Builder
+	sb.Grow(len(s))
+
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			sb.WriteByte(s[i])
+			continue
+		}
+
+		i++
+		switch c := s[i]; c {
+		case 'n', 'r':
+			sb.WriteByte(' ')
+		case 't':
+			sb.WriteByte(' ')
+		case 'b', 'f':
+			sb.WriteByte(' ')
+		case '(', ')', '\\':
+			sb.WriteByte(c)
+		case '\n':
+			// Continuation de ligne : la séquence est purement typographique.
+		case '\r':
+			if i+1 < len(s) && s[i+1] == '\n' {
+				i++
+			}
+		default:
+			if c >= '0' && c <= '7' {
+				// Code octal sur un à trois chiffres.
+				val := int(c - '0')
+				for digits := 1; digits < 3 && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '7'; digits++ {
+					i++
+					val = val*8 + int(s[i]-'0')
+				}
+				if val >= 0x20 && val < 0x7f {
+					sb.WriteByte(byte(val))
+				} else if val >= 0xa0 {
+					// Plage haute Latin-1 : convertie en rune UTF-8 valide.
+					sb.WriteRune(rune(val))
+				} else {
+					sb.WriteByte(' ')
+				}
+			} else {
+				sb.WriteByte(c)
+			}
 		}
 	}
 
-	if extracted == "" {
-		return "[Document PDF indexé pour vectorisation sémantique]"
-	}
-	return extracted
-}
-
-func cleanPDFString(s string) string {
-	s = strings.ReplaceAll(s, `\n`, "\n")
-	s = strings.ReplaceAll(s, `\r`, "")
-	s = strings.ReplaceAll(s, `\t`, " ")
-	s = strings.ReplaceAll(s, `\(`, "(")
-	s = strings.ReplaceAll(s, `\)`, ")")
-	s = strings.ReplaceAll(s, `\\`, `\`)
-	return strings.TrimSpace(s)
+	return strings.TrimSpace(sb.String())
 }
 
 func isPDFInternalKeyword(w string) bool {
@@ -503,19 +838,12 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	requestedModel := r.URL.Query().Get("model")
 	s.mu.RLock()
-	currentModel := s.modelName
+	activeModel := s.modelName
 	s.mu.RUnlock()
 
-	activeModel := currentModel
-	if requestedModel != "" {
-		for _, m := range AvailableModels {
-			if m.ID == requestedModel {
-				activeModel = requestedModel
-				break
-			}
-		}
+	if requested := r.URL.Query().Get("model"); isKnownModel(requested) {
+		activeModel = requested
 	}
 
 	// 1. Étape de Retrieval (Recherche sémantique)
@@ -596,41 +924,99 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Algorithme de recherche de chunks dans les documents indexés
+// searchDocuments sélectionne les passages les plus pertinents du corpus.
+//
+// Le retrieval opère au niveau du chunk et non du document : c'est le passage qui
+// a effectivement matché qui est transmis au modèle, et non les 160 premiers
+// caractères du fichier. Les résultats sont triés par score décroissant puis
+// tronqués à topKChunks pour borner la taille du prompt et son coût.
 func (s *ServerState) searchDocuments(query string) []SearchChunk {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	terms := strings.Fields(strings.ToLower(query))
-	var matches []SearchChunk
+	terms := significantTerms(query)
+	if len(terms) == 0 {
+		return []SearchChunk{}
+	}
+
+	matches := make([]SearchChunk, 0, topKChunks)
 
 	for _, doc := range s.documents {
-		lowerContent := strings.ToLower(doc.Content)
-		score := 0.0
+		lowerTitle := strings.ToLower(doc.Title)
 
+		// Un match dans le titre bénéficie à tous les chunks du document.
+		titleScore := 0.0
 		for _, term := range terms {
-			if len(term) <= 2 {
-				continue
-			}
-			if strings.Contains(lowerContent, term) {
-				score += 0.35
-			}
-			if strings.Contains(strings.ToLower(doc.Title), term) {
-				score += 0.5
+			if strings.Contains(lowerTitle, term) {
+				titleScore += 0.5
 			}
 		}
 
-		if score > 0 || len(matches) == 0 {
+		for _, chunk := range doc.Chunks {
+			lowerText := strings.ToLower(chunk.Text)
+			score := titleScore
+
+			for _, term := range terms {
+				// La fréquence d'occurrence départage les passages : un chunk qui
+				// mentionne trois fois le terme est plus pertinent qu'un chunk qui
+				// l'évoque une seule fois.
+				if occurrences := strings.Count(lowerText, term); occurrences > 0 {
+					score += 0.35 + 0.1*float64(min(occurrences-1, 5))
+				}
+			}
+
+			if score <= 0 {
+				continue
+			}
+
 			matches = append(matches, SearchChunk{
 				DocumentTitle: doc.Title,
-				Snippet:       doc.Snippet,
+				Snippet:       truncateText(chunk.Text, 600),
 				Score:         score,
 				SourceURI:     doc.Source,
+				ChunkIndex:    chunk.Index,
 			})
 		}
 	}
 
+	// Tri par pertinence décroissante, en départageant à score égal par l'ordre
+	// des chunks afin de garantir un résultat déterministe.
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].Score != matches[j].Score {
+			return matches[i].Score > matches[j].Score
+		}
+		return matches[i].ChunkIndex < matches[j].ChunkIndex
+	})
+
+	if len(matches) > topKChunks {
+		matches = matches[:topKChunks]
+	}
 	return matches
+}
+
+// significantTerms normalise la requête en écartant les mots trop courts et les
+// mots vides qui matcheraient partout sans apporter de signal de pertinence.
+func significantTerms(query string) []string {
+	var terms []string
+	for _, term := range strings.Fields(strings.ToLower(query)) {
+		term = strings.Trim(term, ".,;:!?()[]\"'")
+		if utf8.RuneCountInString(term) <= 2 || isStopWord(term) {
+			continue
+		}
+		terms = append(terms, term)
+	}
+	return terms
+}
+
+func isStopWord(w string) bool {
+	switch w {
+	case "les", "des", "une", "que", "qui", "pour", "dans", "avec", "sur", "par",
+		"est", "sont", "aux", "ses", "cette", "comment", "quel", "quelle", "quels",
+		"quelles", "the", "and", "for", "with", "what", "how", "are", "was":
+		return true
+	default:
+		return false
+	}
 }
 
 // Appel direct à l'API Vertex AI Gemini via REST & ADC
@@ -651,14 +1037,22 @@ func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, ch
 		s.mu.RUnlock()
 	}
 
-	// Construire le prompt groundé avec le contexte
+	// Construction du prompt groundé. On transmet le texte du passage retenu par le
+	// retrieval, et non plus le snippet d'en-tête du document qui ne contenait que
+	// la page de garde et privait le modèle du contenu réellement pertinent.
 	var contextBuilder bytes.Buffer
 	for i, c := range chunks {
-		contextBuilder.WriteString(fmt.Sprintf("\n[Source %d: %s]\n%s\n", i+1, c.DocumentTitle, c.Snippet))
+		fmt.Fprintf(&contextBuilder, "\n[Source %d: %s (passage %d)]\n%s\n",
+			i+1, c.DocumentTitle, c.ChunkIndex+1, c.Snippet)
 	}
 
-	systemInstruction := "Tu es un assistant IA d'architecture Google Cloud. Réponds à la question de manière concise et précise en t'appuyant rigoureusement sur le contexte documentaire fourni ci-dessous. Mentionne explicitement les sources utilisées entre crochets (ex: [Source 1])."
-	prompt := fmt.Sprintf("%s\n\nQuestion de l'utilisateur : %s\n\nContexte documentaire disponible :%s", systemInstruction, query, contextBuilder.String())
+	systemInstruction := "Tu es un assistant IA d'architecture Google Cloud. Réponds à la question de manière concise et précise en t'appuyant rigoureusement sur le contexte documentaire fourni ci-dessous. Mentionne explicitement les sources utilisées entre crochets (ex: [Source 1]). Si le contexte ne permet pas de répondre, indique-le explicitement plutôt que d'inventer."
+
+	contextSection := contextBuilder.String()
+	if contextSection == "" {
+		contextSection = "\n(Aucun passage pertinent n'a été trouvé dans le corpus indexé.)\n"
+	}
+	prompt := fmt.Sprintf("%s\n\nQuestion de l'utilisateur : %s\n\nContexte documentaire disponible :%s", systemInstruction, query, contextSection)
 
 	// Les modèles Gemini 3 de dernière génération sont routés via le endpoint global Vertex AI
 	targetLocation := s.region
@@ -695,7 +1089,16 @@ func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, ch
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Pas de Timeout sur le client : sur une réponse en streaming, http.Client.Timeout
+	// couvre la lecture complète du corps et couperait donc la génération en plein
+	// milieu. La durée de vie de l'appel est pilotée par le contexte du handler.
+	client := &http.Client{
+		Transport: &http.Transport{
+			// On borne en revanche l'attente des en-têtes, pour ne pas rester bloqué
+			// si Vertex AI ne répond pas du tout.
+			ResponseHeaderTimeout: 30 * time.Second,
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, 0, err
@@ -703,55 +1106,65 @@ func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, ch
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return 0, 0, fmt.Errorf("erreur HTTP Vertex AI %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Traiter le flux SSE retourné par Vertex AI
-	promptTokens := 0
-	candidateTokens := 0
-	buf := make([]byte, 2048)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			lines := strings.Split(string(buf[:n]), "\n")
-			for _, line := range lines {
-				if strings.HasPrefix(line, "data: ") {
-					dataJson := strings.TrimPrefix(line, "data: ")
-					var vResp struct {
-						Candidates []struct {
-							Content struct {
-								Parts []struct {
-									Text string `json:"text"`
-								} `json:"parts"`
-							} `json:"content"`
-						} `json:"candidates"`
-						UsageMetadata struct {
-							PromptTokenCount     int `json:"promptTokenCount"`
-							CandidatesTokenCount int `json:"candidatesTokenCount"`
-						} `json:"usageMetadata"`
-					}
-					if json.Unmarshal([]byte(dataJson), &vResp) == nil {
-						if vResp.UsageMetadata.PromptTokenCount > 0 {
-							promptTokens = vResp.UsageMetadata.PromptTokenCount
-						}
-						if vResp.UsageMetadata.CandidatesTokenCount > 0 {
-							candidateTokens = vResp.UsageMetadata.CandidatesTokenCount
-						}
-						for _, cand := range vResp.Candidates {
-							for _, p := range cand.Content.Parts {
-								if p.Text != "" {
-									onToken(p.Text)
-								}
-							}
-						}
-					}
+	// Lecture du flux SSE ligne par ligne.
+	//
+	// Une lecture à taille fixe découperait les événements JSON à cheval sur deux
+	// blocs réseau : le json.Unmarshal échouait alors silencieusement et le token
+	// était définitivement perdu. bufio.Scanner réassemble les lignes partielles.
+	promptTokens, candidateTokens := 0, 0
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // Certains événements dépassent 64 Ko
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+
+		var vResp struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text string `json:"text"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+			UsageMetadata struct {
+				PromptTokenCount     int `json:"promptTokenCount"`
+				CandidatesTokenCount int `json:"candidatesTokenCount"`
+			} `json:"usageMetadata"`
+		}
+
+		if err := json.Unmarshal([]byte(payload), &vResp); err != nil {
+			log.Printf("⚠️  Événement SSE Vertex AI illisible, ignoré : %v", err)
+			continue
+		}
+
+		if vResp.UsageMetadata.PromptTokenCount > 0 {
+			promptTokens = vResp.UsageMetadata.PromptTokenCount
+		}
+		if vResp.UsageMetadata.CandidatesTokenCount > 0 {
+			candidateTokens = vResp.UsageMetadata.CandidatesTokenCount
+		}
+		for _, cand := range vResp.Candidates {
+			for _, p := range cand.Content.Parts {
+				if p.Text != "" {
+					onToken(p.Text)
 				}
 			}
 		}
-		if err != nil {
-			break
-		}
+	}
+
+	if err := scanner.Err(); err != nil && !errors.Is(err, context.Canceled) {
+		return promptTokens, candidateTokens, fmt.Errorf("lecture du flux Vertex AI interrompue : %w", err)
 	}
 
 	return promptTokens, candidateTokens, nil
@@ -774,10 +1187,30 @@ func (s *ServerState) streamLocalFallback(query string, chunks []SearchChunk, on
 	}
 }
 
+// tokenCache évite un aller-retour vers le serveur de métadonnées à chaque requête.
+// Les jetons GCE sont valides une heure ; on conserve une marge de sécurité.
+var tokenCache struct {
+	sync.Mutex
+	value     string
+	expiresAt time.Time
+}
+
 func fetchMetadataToken() string {
-	req, _ := http.NewRequest(http.MethodGet, "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token", nil)
+	tokenCache.Lock()
+	defer tokenCache.Unlock()
+
+	if tokenCache.value != "" && time.Now().Before(tokenCache.expiresAt) {
+		return tokenCache.value
+	}
+
+	req, err := http.NewRequest(http.MethodGet,
+		"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token", nil)
+	if err != nil {
+		return ""
+	}
 	req.Header.Set("Metadata-Flavor", "Google")
-	client := &http.Client{Timeout: 2 * time.Second}
+
+	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return ""
@@ -786,16 +1219,32 @@ func fetchMetadataToken() string {
 
 	var t struct {
 		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
 	}
-	if json.NewDecoder(resp.Body).Decode(&t) == nil {
-		return t.AccessToken
+	if err := json.NewDecoder(resp.Body).Decode(&t); err != nil || t.AccessToken == "" {
+		return ""
 	}
-	return ""
+
+	ttl := time.Duration(t.ExpiresIn) * time.Second
+	if ttl <= 0 {
+		ttl = time.Hour
+	}
+	// Marge de 5 minutes pour ne jamais servir un jeton sur le point d'expirer.
+	tokenCache.value = t.AccessToken
+	tokenCache.expiresAt = time.Now().Add(ttl - 5*time.Minute)
+
+	return t.AccessToken
 }
 
+// truncateText tronque un texte à maxLen caractères.
+//
+// La troncature s'effectue sur les runes et non sur les octets : couper au milieu
+// d'un caractère accentué produirait une séquence UTF-8 invalide, remplacée par un
+// caractère de remplacement (�) lors de la sérialisation JSON.
 func truncateText(text string, maxLen int) string {
-	if len(text) <= maxLen {
+	if utf8.RuneCountInString(text) <= maxLen {
 		return text
 	}
-	return text[:maxLen] + "..."
+	runes := []rune(text)
+	return string(runes[:maxLen]) + "..."
 }

@@ -1,27 +1,32 @@
-# Multi-stage Dockerfile pour un conteneur ultra-léger et rapide (<25MB)
+# Multi-stage Dockerfile pour un conteneur minimal et sans shell
 FROM golang:1.22-alpine AS builder
 
 WORKDIR /app
 
-# Téléchargement des dépendances
-COPY go.mod ./
-# Note: go.sum si présent
-RUN go mod download || true
+# Les dépendances sont copiées séparément pour bénéficier du cache de couches.
+# Pas de `|| true` ici : une résolution de dépendance en échec doit faire échouer
+# le build plutôt que produire une image silencieusement incomplète.
+COPY go.mod go.su[m] ./
+RUN go mod download
 
 COPY . .
 
-# Compilation du binaire statique Go
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o rag-chatbot main.go
+# Les tests s'exécutent dans l'image de build : une régression bloque la livraison.
+RUN CGO_ENABLED=0 go test ./...
 
-# Image finale de production minimale
-FROM alpine:3.19
+# Binaire statique, sans table de symboles ni informations de débogage.
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o rag-chatbot .
 
-RUN apk --no-cache add ca-certificates tzdata
+# Image finale distroless : ni shell ni gestionnaire de paquets, donc surface
+# d'attaque très réduite, et exécution sous un utilisateur non privilégié.
+FROM gcr.io/distroless/static-debian12:nonroot
 
 WORKDIR /app
 COPY --from=builder /app/rag-chatbot .
 
+USER nonroot:nonroot
+
 EXPOSE 8080
 ENV PORT=8080
 
-CMD ["./rag-chatbot"]
+ENTRYPOINT ["/app/rag-chatbot"]
