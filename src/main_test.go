@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/zlib"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -356,5 +357,99 @@ func TestSignificantTermsFiltersNoise(t *testing.T) {
 
 	if len(got) == 0 {
 		t.Error("tous les termes ont été filtrés, attendu au moins 'budgets' et 'waf'")
+	}
+}
+
+func TestNormalizeForSearch(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"apostrophe droite", "L'anarchie", "l anarchie"},
+		{"apostrophe typographique", "L\u2019anarchie", "l anarchie"},
+		{"accents repliés", "Théoriciens de l'État", "theoriciens de l etat"},
+		{"trait d'union", "cloud-nat", "cloud nat"},
+		{"ligature", "Sœur & cœur", "soeur coeur"},
+		{"ponctuation terminale", "Qu'est-ce que l'anarchie ?", "qu est ce que l anarchie"},
+		{"espaces multiples", "  deux\t\nmots  ", "deux mots"},
+		{"chiffres conservés", "Article 49.3", "article 49 3"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeForSearch(tc.in); got != tc.want {
+				t.Errorf("normalizeForSearch(%q) = %q, attendu %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// Les deux formes d'apostrophe doivent produire la même représentation, sans quoi
+// une question saisie au clavier ne peut pas matcher un PDF, qui emploie U+2019.
+func TestNormalizeForSearchUnifiesApostrophes(t *testing.T) {
+	straight := normalizeForSearch("Qu'est-ce que l'anarchie ?")
+	typographic := normalizeForSearch("Qu\u2019est-ce que l\u2019anarchie ?")
+
+	if straight != typographic {
+		t.Errorf("les deux apostrophes divergent : %q vs %q", straight, typographic)
+	}
+}
+
+func TestSignificantTermsSplitsElision(t *testing.T) {
+	for _, query := range []string{
+		"Qu'est-ce que l'anarchie ?",
+		"Qu\u2019est-ce que l\u2019anarchie ?",
+		"l'anarchie",
+		"ANARCHIE",
+	} {
+		terms := significantTerms(query)
+		if !slices.Contains(terms, "anarchie") {
+			t.Errorf("significantTerms(%q) = %v, attendu le terme 'anarchie'", query, terms)
+		}
+	}
+}
+
+// Reproduction du défaut signalé : les documents étaient bien indexés mais la
+// question « Qu'est-ce que l'anarchie ? » ne remontait aucun passage, car le
+// terme restait collé à son élision et l'apostrophe du PDF différait de celle
+// saisie par l'utilisateur.
+func TestSearchDocumentsFrenchElision(t *testing.T) {
+	s := &ServerState{documents: []Document{
+		newDocument(
+			"d1",
+			"Th\u00e9oriciens politiques",
+			"gs://x/1",
+			"L\u2019anarchie d\u00e9signe une organisation politique sans autorit\u00e9 centrale. "+
+				"Les partisans de l\u2019anarchie pr\u00f4nent l\u2019autogestion.",
+			time.Now(),
+		),
+	}}
+
+	for _, query := range []string{
+		"Qu'est-ce que l'anarchie ?",
+		"Qu\u2019est-ce que l\u2019anarchie ?",
+		"l'anarchie",
+		"anarchie",
+		"ANARCHIE",
+	} {
+		if got := s.searchDocuments(query); len(got) == 0 {
+			t.Errorf("searchDocuments(%q) n'a remont\u00e9 aucun passage", query)
+		}
+	}
+}
+
+// La question peut être saisie sans accent : le repliage doit fonctionner dans
+// les deux sens puisqu'il est appliqué au contenu comme à la requête.
+func TestSearchDocumentsIgnoresAccents(t *testing.T) {
+	s := &ServerState{documents: []Document{
+		newDocument("d1", "Note", "gs://x/1", "La s\u00e9curit\u00e9 p\u00e9rim\u00e9trique repose sur le pare-feu.", time.Now()),
+	}}
+
+	if got := s.searchDocuments("securite perimetrique"); len(got) == 0 {
+		t.Error("une requête sans accent doit retrouver un contenu accentué")
+	}
+	if got := s.searchDocuments("s\u00e9curit\u00e9"); len(got) == 0 {
+		t.Error("une requête accentuée doit retrouver le même contenu")
 	}
 }

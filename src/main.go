@@ -24,6 +24,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -34,6 +35,10 @@ var staticFS embed.FS
 type Chunk struct {
 	Index int    `json:"index"`
 	Text  string `json:"text"`
+	// norm est la forme normalisée de Text (minuscules, sans accent ni
+	// apostrophe) sur laquelle s'effectue la recherche. Elle est calculée une
+	// fois à l'indexation plutôt qu'à chaque requête.
+	norm string
 }
 
 type Document struct {
@@ -49,6 +54,7 @@ type Document struct {
 	SizeBytes int       `json:"size_bytes"`
 	NumChunks int       `json:"num_chunks"`
 	CreatedAt time.Time `json:"created_at"`
+	normTitle string
 }
 
 type SearchChunk struct {
@@ -568,6 +574,7 @@ func newDocument(id, title, source, content string, createdAt time.Time) Documen
 		SizeBytes: len(content),
 		NumChunks: len(chunks),
 		CreatedAt: createdAt,
+		normTitle: normalizeForSearch(title),
 	}
 }
 
@@ -584,7 +591,7 @@ func chunkText(text string) []Chunk {
 
 	runes := []rune(text)
 	if len(runes) <= chunkSize {
-		return []Chunk{{Index: 0, Text: text}}
+		return []Chunk{{Index: 0, Text: text, norm: normalizeForSearch(text)}}
 	}
 
 	var chunks []Chunk
@@ -594,12 +601,60 @@ func chunkText(text string) []Chunk {
 		if end > len(runes) {
 			end = len(runes)
 		}
-		chunks = append(chunks, Chunk{Index: idx, Text: string(runes[start:end])})
+		piece := string(runes[start:end])
+		chunks = append(chunks, Chunk{Index: idx, Text: piece, norm: normalizeForSearch(piece)})
 		if end == len(runes) {
 			break
 		}
 	}
 	return chunks
+}
+
+// Repliage des caractères accentués et des ligatures vers leur équivalent ASCII.
+// Une recherche sur « theoriciens » doit remonter « théoriciens », et inversement.
+var accentFolding = map[rune]string{
+	'à': "a", 'á': "a", 'â': "a", 'ã': "a", 'ä': "a", 'å': "a",
+	'ç': "c",
+	'è': "e", 'é': "e", 'ê': "e", 'ë': "e",
+	'ì': "i", 'í': "i", 'î': "i", 'ï': "i",
+	'ñ': "n",
+	'ò': "o", 'ó': "o", 'ô': "o", 'õ': "o", 'ö': "o", 'ø': "o",
+	'ù': "u", 'ú': "u", 'û': "u", 'ü': "u",
+	'ý': "y", 'ÿ': "y",
+	'æ': "ae", 'œ': "oe", 'ß': "ss",
+}
+
+// normalizeForSearch produit la forme canonique utilisée pour la comparaison.
+//
+// Trois écarts empêchaient sinon toute correspondance sur un corpus francophone :
+//
+//   - Les élisions. « l'anarchie » constituait un seul terme, qui ne
+//     correspondait pas à « anarchie ». Toute ponctuation devient un séparateur,
+//     ce qui isole le mot porteur de sens.
+//   - Les apostrophes. Un PDF contient l'apostrophe typographique « ’ » (U+2019)
+//     là où l'utilisateur saisit l'apostrophe droite « ' » (U+0027) : les deux
+//     chaînes ne s'égalaient jamais.
+//   - Les accents, dont la saisie est souvent omise dans une question.
+//
+// La fonction est appliquée symétriquement au contenu indexé et à la requête,
+// seule façon de garantir que les deux côtés soient comparables.
+func normalizeForSearch(s string) string {
+	var sb strings.Builder
+	sb.Grow(len(s))
+
+	for _, r := range strings.ToLower(s) {
+		if folded, ok := accentFolding[r]; ok {
+			sb.WriteString(folded)
+			continue
+		}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			sb.WriteRune(r)
+			continue
+		}
+		sb.WriteByte(' ')
+	}
+
+	return strings.Join(strings.Fields(sb.String()), " ")
 }
 
 // sanitizeFilename neutralise les noms de fichiers hostiles.
@@ -942,25 +997,29 @@ func (s *ServerState) searchDocuments(query string) []SearchChunk {
 	matches := make([]SearchChunk, 0, topKChunks)
 
 	for _, doc := range s.documents {
-		lowerTitle := strings.ToLower(doc.Title)
+		// Les formes normalisées sont pré-calculées à l'indexation ; la requête
+		// l'étant également, les deux côtés de la comparaison sont comparables.
+		// Comparer directement doc.Title/chunk.Text mis en minuscules faisait
+		// échouer tout terme accentué, élidé ou porteur d'une apostrophe typographique.
+		titleNorm := doc.normTitle
 
 		// Un match dans le titre bénéficie à tous les chunks du document.
 		titleScore := 0.0
 		for _, term := range terms {
-			if strings.Contains(lowerTitle, term) {
+			if strings.Contains(titleNorm, term) {
 				titleScore += 0.5
 			}
 		}
 
 		for _, chunk := range doc.Chunks {
-			lowerText := strings.ToLower(chunk.Text)
+			chunkNorm := chunk.norm
 			score := titleScore
 
 			for _, term := range terms {
 				// La fréquence d'occurrence départage les passages : un chunk qui
 				// mentionne trois fois le terme est plus pertinent qu'un chunk qui
 				// l'évoque une seule fois.
-				if occurrences := strings.Count(lowerText, term); occurrences > 0 {
+				if occurrences := strings.Count(chunkNorm, term); occurrences > 0 {
 					score += 0.35 + 0.1*float64(min(occurrences-1, 5))
 				}
 			}
@@ -994,12 +1053,18 @@ func (s *ServerState) searchDocuments(query string) []SearchChunk {
 	return matches
 }
 
-// significantTerms normalise la requête en écartant les mots trop courts et les
-// mots vides qui matcheraient partout sans apporter de signal de pertinence.
+// significantTerms découpe la requête en termes comparables au contenu indexé.
+//
+// La requête traverse exactement la même normalisation que les chunks : c'est la
+// seule façon de garantir que « Qu'est-ce que l'anarchie ? » produise le terme
+// « anarchie ». L'ancien découpage sur les espaces conservait « l'anarchie » en un
+// seul token, qui ne correspondait à rien dans le corpus.
+//
+// Les mots vides et les termes de moins de trois caractères sont écartés : ils
+// matcheraient partout sans apporter de signal de pertinence.
 func significantTerms(query string) []string {
 	var terms []string
-	for _, term := range strings.Fields(strings.ToLower(query)) {
-		term = strings.Trim(term, ".,;:!?()[]\"'")
+	for _, term := range strings.Fields(normalizeForSearch(query)) {
 		if utf8.RuneCountInString(term) <= 2 || isStopWord(term) {
 			continue
 		}
@@ -1008,11 +1073,15 @@ func significantTerms(query string) []string {
 	return terms
 }
 
+// La liste est volontairement sans accent : isStopWord reçoit des termes déjà
+// passés par normalizeForSearch, qui replie les accents.
 func isStopWord(w string) bool {
 	switch w {
 	case "les", "des", "une", "que", "qui", "pour", "dans", "avec", "sur", "par",
 		"est", "sont", "aux", "ses", "cette", "comment", "quel", "quelle", "quels",
-		"quelles", "the", "and", "for", "with", "what", "how", "are", "was":
+		"quelles", "quoi", "donc", "ceci", "cela", "leur", "leurs", "nous", "vous",
+		"the", "and", "for", "with", "what", "how", "are", "was", "does", "did",
+		"this", "that", "from", "you":
 		return true
 	default:
 		return false
