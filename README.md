@@ -2,10 +2,10 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![Google Cloud](https://img.shields.io/badge/Google_Cloud-Vertex_AI-4285F4?style=flat&logo=google-cloud)](https://cloud.google.com/vertex-ai)
-[![Gemini 2.5](https://img.shields.io/badge/Gemini-2.5_Flash-8E75B2?style=flat&logo=google-gemini)](https://ai.google.dev/)
+[![Gemini 3](https://img.shields.io/badge/Gemini-3.5_Flash_%7C_3.8_Flash_%7C_3.1_Pro-8E75B2?style=flat&logo=google-gemini)](https://ai.google.dev/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-> **Application de démonstration avant-vente prête à l'emploi**, conçue pour illustrer en clientèle l'apport immédiat du **RAG (Retrieval-Augmented Generation) et du Grounding avec Gemini** face à un moteur de recherche classique par mots-clés.
+> **Application de démonstration avant-vente prête à l'emploi**, conçue pour illustrer en clientèle l'apport immédiat du **RAG (Retrieval-Augmented Generation) et du Grounding avec la suite Gemini 3** face à un moteur de recherche classique par mots-clés.
 
 Cette application est découplée de l'infrastructure et conçue pour se déployer instantanément sur [**GCP AI Foundation Blueprint**](https://github.com/cloud-gtm/gcp-ai-foundation-blueprint) (GKE Autopilot) ou sur **Google Cloud Run**.
 
@@ -13,9 +13,11 @@ Cette application est découplée de l'infrastructure et conçue pour se déploy
 
 ## 🌟 Fonctionnalités Clés
 
-1. **Modèles de Dernière Génération (Gemini 2.5 Flash & Pro)** :
-   - **Gemini 2.5 Flash** (Défaut) : Rapidité d'exécution, ultra-faible latence et efficience multimodale.
-   - **Gemini 2.5 Pro** : Raisonnement complexe approfondi et synthèses d'architecture denses.
+1. **Suite de Modèles Gemini 3 (Dernière Génération)** :
+   - **Gemini 3.5 Flash** (Défaut) : Rapidité d'exécution, ultra-faible latence et efficience multimodale native.
+   - **Gemini 3.8 Flash** : Modèle agentique de pointe pour l'ingénierie et les raisonnements de code complexes.
+   - **Gemini 3.1 Pro Preview** : Modèle Frontier pour les analyses d'architecture denses et le raisonnement en profondeur.
+   - **Gemini 3.5 Flash-Lite** : Modèle ultra-léger haute cadence pour cas d'usage à fort débit.
    - **Sélecteur Dynamique** : Bascule instantanée de modèle directement depuis la barre d'en-tête, sans redémarrage du conteneur.
 2. **Effet Avant / Après (Toggle & Split-Screen)** :
    - **Mode Recherche Classique** : Affiche les extraits bruts sans synthèse ni compréhension (obligeant l'utilisateur à tout lire).

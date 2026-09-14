@@ -28,8 +28,9 @@ Ce guide explique pas-à-pas comment déployer et exploiter l'application **RAG 
                      └─────────────────┬─────────────────┘
                                        │ Vertex AI API
                           ┌────────────┴────────────┐
-                          │     Gemini 2.5 Flash    │
-                          │  + Grounding Search     │
+                          │   Gemini 3 Suite        │
+                          │   (3.5/3.8 Flash, 3.1)  │
+                          │   + Grounding Search    │
                           └─────────────────────────┘
 ```
 

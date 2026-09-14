@@ -46,17 +46,45 @@ type ModelInfo struct {
 
 var AvailableModels = []ModelInfo{
 	{
-		ID:          "gemini-2.5-flash",
-		Name:        "Gemini 2.5 Flash",
-		Description: "Dernière génération multimodale ultra-rapide & efficiente de Google",
+		ID:          "gemini-3.5-flash",
+		Name:        "Gemini 3.5 Flash",
+		Description: "Dernière génération multimodale native ultra-rapide & efficiente de Google",
 		Category:    "Flash",
 		IsDefault:   true,
 	},
 	{
-		ID:          "gemini-2.5-pro",
-		Name:        "Gemini 2.5 Pro",
-		Description: "Raisonnement complexe avancé & synthèse d'architecture approfondie",
+		ID:          "gemini-3.8-flash",
+		Name:        "Gemini 3.8 Flash",
+		Description: "Modèle agentique de pointe pour l'ingénierie et le raisonnement de code complexe",
+		Category:    "Agentic",
+		IsDefault:   false,
+	},
+	{
+		ID:          "gemini-3.1-pro-preview",
+		Name:        "Gemini 3.1 Pro Preview",
+		Description: "Modèle Frontier de raisonnement approfondi & synthèse d'architecture complexe",
 		Category:    "Pro",
+		IsDefault:   false,
+	},
+	{
+		ID:          "gemini-3.5-flash-lite",
+		Name:        "Gemini 3.5 Flash-Lite",
+		Description: "Ultra-rapide, ultra-légère latence et débit maximal pour le RAG haute fréquence",
+		Category:    "Flash-Lite",
+		IsDefault:   false,
+	},
+	{
+		ID:          "gemini-3.7-flash",
+		Name:        "Gemini 3.7 Flash",
+		Description: "Modèle de transition rapide et précis avec réflexion hybride",
+		Category:    "Flash",
+		IsDefault:   false,
+	},
+	{
+		ID:          "gemini-2.5-flash",
+		Name:        "Gemini 2.5 Flash",
+		Description: "Génération précédente (legacy / fallback)",
+		Category:    "Legacy",
 		IsDefault:   false,
 	},
 }
@@ -80,7 +108,7 @@ func main() {
 	}
 	modelName := os.Getenv("GEMINI_MODEL")
 	if modelName == "" {
-		modelName = "gemini-2.5-flash"
+		modelName = "gemini-3.5-flash"
 	}
 
 	state := &ServerState{
@@ -476,8 +504,16 @@ func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, ch
 	systemInstruction := "Tu es un assistant IA d'architecture Google Cloud. Réponds à la question de manière concise et précise en t'appuyant rigoureusement sur le contexte documentaire fourni ci-dessous. Mentionne explicitement les sources utilisées entre crochets (ex: [Source 1])."
 	prompt := fmt.Sprintf("%s\n\nQuestion de l'utilisateur : %s\n\nContexte documentaire disponible :%s", systemInstruction, query, contextBuilder.String())
 
-	apiURL := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:streamGenerateContent?alt=sse",
-		s.region, s.projectID, s.region, modelName)
+	// Les modèles Gemini 3 de dernière génération sont routés via le endpoint global Vertex AI
+	targetLocation := s.region
+	endpointHost := fmt.Sprintf("%s-aiplatform.googleapis.com", s.region)
+	if strings.HasPrefix(modelName, "gemini-3") {
+		targetLocation = "global"
+		endpointHost = "aiplatform.googleapis.com"
+	}
+
+	apiURL := fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/publishers/google/models/%s:streamGenerateContent?alt=sse",
+		endpointHost, s.projectID, targetLocation, modelName)
 
 	reqBody := map[string]any{
 		"contents": []map[string]any{

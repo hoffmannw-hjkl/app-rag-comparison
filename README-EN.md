@@ -2,10 +2,10 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![Google Cloud](https://img.shields.io/badge/Google_Cloud-Vertex_AI-4285F4?style=flat&logo=google-cloud)](https://cloud.google.com/vertex-ai)
-[![Gemini 2.5](https://img.shields.io/badge/Gemini-2.5_Flash-8E75B2?style=flat&logo=google-gemini)](https://ai.google.dev/)
+[![Gemini 3](https://img.shields.io/badge/Gemini-3.5_Flash_%7C_3.8_Flash_%7C_3.1_Pro-8E75B2?style=flat&logo=google-gemini)](https://ai.google.dev/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-> **Production-ready pre-sales demonstration application**, designed to illustrate the immediate value of **RAG (Retrieval-Augmented Generation) and Gemini Grounding** compared to standard keyword search engines.
+> **Production-ready pre-sales demonstration application**, designed to illustrate the immediate value of **RAG (Retrieval-Augmented Generation) and Gemini 3 Grounding** compared to standard keyword search engines.
 
 This application is decoupled from infrastructure and ready for instant deployment on [**GCP AI Foundation Blueprint**](https://github.com/cloud-gtm/gcp-ai-foundation-blueprint) (GKE Autopilot) or **Google Cloud Run**.
 
@@ -13,9 +13,11 @@ This application is decoupled from infrastructure and ready for instant deployme
 
 ## 🌟 Key Features
 
-1. **Latest Generation Multimodal Models (Gemini 2.5 Flash & Pro)**:
-   - **Gemini 2.5 Flash** (Default): High throughput, ultra-low latency, and cost-effective multimodal grounding.
-   - **Gemini 2.5 Pro**: Advanced multi-step reasoning and detailed architectural synthesis.
+1. **Gemini 3 Generation Models Suite**:
+   - **Gemini 3.5 Flash** (Default): Native multimodal reasoning, ultra-low latency, and high efficiency.
+   - **Gemini 3.8 Flash**: Frontier agentic model optimized for code understanding and complex reasoning.
+   - **Gemini 3.1 Pro Preview**: Deep reasoning model for exhaustive technical synthesis and architecture reviews.
+   - **Gemini 3.5 Flash-Lite**: High-throughput, ultra-fast model for demanding low-latency RAG workloads.
    - **Dynamic Switching**: Change models on-the-fly directly from the header dropdown without restarting the app.
 2. **Before / After Effect (Toggle & Split-Screen)**:
    - **Classic Search Mode**: Displays raw excerpts without synthesis (forcing the user to read through all passages).
