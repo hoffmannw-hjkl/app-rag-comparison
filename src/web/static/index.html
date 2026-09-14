@@ -187,20 +187,15 @@
         <button id="tab-text" onclick="switchUploadTab('text')" class="pb-2 px-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200">Coller un Texte / URL</button>
       </div>
 
-      <!-- Formulaire 1 : Fichier local via sélecteur -->
+      <!-- Formulaire 1 : Fichiers locaux via sélecteur (support multi-sélection) -->
       <div id="form-file-mode" class="space-y-3">
         <div class="border-2 border-dashed border-slate-700/80 hover:border-blue-500 rounded-xl p-5 text-center bg-slate-950/60 cursor-pointer" onclick="document.getElementById('file-picker').click()">
           <i class="fa-solid fa-file-arrow-up text-2xl text-blue-400 mb-2"></i>
-          <p class="text-xs font-medium text-slate-200" id="file-picker-label">Cliquez pour choisir un fichier</p>
-          <p class="text-[10px] text-slate-500 mt-1">PDF, TXT, Markdown, CSV, DOCX (Max 10 Mo)</p>
-          <input type="file" id="file-picker" onchange="handleFileSelect(event)" class="hidden" accept=".txt,.md,.pdf,.csv,.doc,.docx,.json">
+          <p class="text-xs font-medium text-slate-200" id="file-picker-label">Cliquez pour choisir un ou plusieurs fichiers</p>
+          <p class="text-[10px] text-slate-500 mt-1">PDF, TXT, Markdown, CSV, DOCX (Sélection multiple autorisée - Max 50 Mo)</p>
+          <input type="file" id="file-picker" onchange="handleFileSelect(event)" class="hidden" multiple accept=".txt,.md,.pdf,.csv,.doc,.docx,.json">
         </div>
-        <div id="file-preview-info" class="hidden p-2.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-300 flex items-center justify-between">
-          <div class="flex items-center space-x-2 truncate">
-            <i class="fa-solid fa-paperclip text-cyan-400"></i>
-            <span id="file-name-display" class="truncate font-medium"></span>
-          </div>
-          <span id="file-size-display" class="text-[10px] text-slate-500 flex-shrink-0"></span>
+        <div id="file-preview-info" class="hidden p-2.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-300 space-y-1.5 max-h-36 overflow-y-auto custom-scrollbar">
         </div>
       </div>
 
@@ -337,7 +332,7 @@
     }
 
     let activeUploadTab = 'file';
-    let selectedFile = null;
+    let selectedFiles = [];
 
     function switchUploadTab(tab) {
       activeUploadTab = tab;
@@ -360,18 +355,34 @@
     }
 
     function handleFileSelect(e) {
-      const file = e.target.files[0];
-      if (!file) return;
+      const files = Array.from(e.target.files || []);
+      if (files.length === 0) return;
 
-      selectedFile = file;
-      document.getElementById('file-picker-label').innerText = "Fichier sélectionné : " + file.name;
-      document.getElementById('file-name-display').innerText = file.name;
-      
-      const sizeStr = file.size < 1024 * 1024 
-        ? (file.size / 1024).toFixed(1) + " Ko" 
-        : (file.size / (1024 * 1024)).toFixed(2) + " Mo";
-      document.getElementById('file-size-display').innerText = sizeStr;
-      document.getElementById('file-preview-info').classList.remove('hidden');
+      selectedFiles = files;
+      const previewEl = document.getElementById('file-preview-info');
+      const labelEl = document.getElementById('file-picker-label');
+
+      if (files.length === 1) {
+        labelEl.innerText = "1 fichier sélectionné : " + files[0].name;
+      } else {
+        labelEl.innerText = `${files.length} fichiers sélectionnés`;
+      }
+
+      previewEl.innerHTML = files.map((file, idx) => {
+        const sizeStr = file.size < 1024 * 1024 
+          ? (file.size / 1024).toFixed(1) + " Ko" 
+          : (file.size / (1024 * 1024)).toFixed(2) + " Mo";
+        return `
+          <div class="flex items-center justify-between p-1.5 rounded bg-slate-900 border border-slate-800">
+            <div class="flex items-center space-x-2 truncate">
+              <i class="fa-solid fa-file-lines text-cyan-400 text-xs"></i>
+              <span class="truncate font-medium">${file.name}</span>
+            </div>
+            <span class="text-[10px] text-slate-500 flex-shrink-0 ml-2 font-mono">${sizeStr}</span>
+          </div>
+        `;
+      }).join('');
+      previewEl.classList.remove('hidden');
     }
 
     async function submitUpload() {
@@ -381,24 +392,27 @@
 
       try {
         if (activeUploadTab === 'file') {
-          if (!selectedFile) {
-            alert('Veuillez sélectionner un fichier');
+          if (!selectedFiles || selectedFiles.length === 0) {
+            alert('Veuillez sélectionner au moins un fichier');
             btn.disabled = false;
             btn.innerHTML = `<i class="fa-solid fa-cloud-arrow-up text-xs"></i> <span>Indexer dans le Corpus</span>`;
             return;
           }
 
           const formData = new FormData();
-          formData.append('file', selectedFile);
-          formData.append('title', selectedFile.name);
-          formData.append('source', 'gs://wh-ai-blueprint-a363-rag-docs/' + selectedFile.name);
+          for (const file of selectedFiles) {
+            formData.append('file', file);
+          }
 
           const res = await fetch('/api/documents/upload', {
             method: 'POST',
             body: formData
           });
 
-          if (!res.ok) throw new Error('Erreur lors de l\'upload du fichier');
+          if (!res.ok) {
+            const errTxt = await res.text();
+            throw new Error('Erreur lors de l\'upload : ' + (errTxt || res.statusText));
+          }
         } else {
           const title = document.getElementById('modal-title').value;
           const source = document.getElementById('modal-source').value;
@@ -421,10 +435,11 @@
         }
 
         closeUploadModal();
-        selectedFile = null;
+        selectedFiles = [];
         document.getElementById('file-picker').value = '';
+        document.getElementById('file-preview-info').innerHTML = '';
         document.getElementById('file-preview-info').classList.add('hidden');
-        document.getElementById('file-picker-label').innerText = "Cliquez pour choisir un fichier";
+        document.getElementById('file-picker-label').innerText = "Cliquez pour choisir un ou plusieurs fichiers";
         loadDocuments();
       } catch (err) {
         alert(err.message);

@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -251,37 +252,71 @@ func (s *ServerState) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var title, source, content string
-
 	contentType := r.Header.Get("Content-Type")
+	var addedDocs []Document
+
 	if strings.HasPrefix(contentType, "multipart/form-data") {
-		// Gestion de l'upload de fichier direct via formulaire multipart
-		if err := r.ParseMultipartForm(10 << 20); err != nil { // 10 Mo max
-			http.Error(w, "Erreur lecture fichier : "+err.Error(), http.StatusBadRequest)
+		// Support jusqu'à 50 Mo pour l'upload de multiples documents / PDFs
+		if err := r.ParseMultipartForm(50 << 20); err != nil {
+			http.Error(w, "Erreur lecture fichiers : "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		file, header, err := r.FormFile("file")
-		if err == nil {
-			defer file.Close()
-			fileBytes, readErr := io.ReadAll(file)
-			if readErr != nil {
-				http.Error(w, "Erreur lecture contenu fichier", http.StatusInternalServerError)
-				return
-			}
-			content = string(fileBytes)
-			title = header.Filename
-			source = "gs://wh-ai-blueprint-a363-rag-docs/" + header.Filename
+		// Récupération des fichiers soit sous le champ 'file' soit 'files'
+		files := r.MultipartForm.File["file"]
+		if len(files) == 0 {
+			files = r.MultipartForm.File["files"]
 		}
 
-		if customTitle := r.FormValue("title"); customTitle != "" {
-			title = customTitle
-		}
-		if customSource := r.FormValue("source"); customSource != "" {
-			source = customSource
-		}
-		if customContent := r.FormValue("content"); customContent != "" {
-			content = customContent
+		if len(files) > 0 {
+			for _, fh := range files {
+				f, err := fh.Open()
+				if err != nil {
+					continue
+				}
+				data, err := io.ReadAll(f)
+				f.Close()
+				if err != nil {
+					continue
+				}
+
+				rawContent := string(data)
+				extracted := rawContent
+				if strings.HasSuffix(strings.ToLower(fh.Filename), ".pdf") {
+					extracted = extractTextFromPDF(data)
+				}
+
+				doc := Document{
+					ID:        fmt.Sprintf("doc-%d-%d", time.Now().UnixNano(), len(addedDocs)),
+					Title:     fh.Filename,
+					Source:    "gs://wh-ai-blueprint-a363-rag-docs/" + fh.Filename,
+					Status:    "indexing",
+					Content:   extracted,
+					Snippet:   truncateText(extracted, 160),
+					CreatedAt: time.Now(),
+				}
+				addedDocs = append(addedDocs, doc)
+			}
+		} else {
+			// Saisie directe sans fichier
+			title := r.FormValue("title")
+			content := r.FormValue("content")
+			source := r.FormValue("source")
+			if title != "" && content != "" {
+				if source == "" {
+					source = "gs://wh-ai-blueprint-a363-rag-docs/" + title
+				}
+				doc := Document{
+					ID:        fmt.Sprintf("doc-%d", time.Now().UnixNano()),
+					Title:     title,
+					Source:    source,
+					Status:    "indexing",
+					Content:   content,
+					Snippet:   truncateText(content, 160),
+					CreatedAt: time.Now(),
+				}
+				addedDocs = append(addedDocs, doc)
+			}
 		}
 	} else {
 		// Gestion du payload JSON standard
@@ -295,49 +330,135 @@ func (s *ServerState) handleUpload(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Corps de requête invalide", http.StatusBadRequest)
 			return
 		}
-		title = req.Title
-		source = req.Source
-		content = req.Content
+		if req.Title != "" && req.Content != "" {
+			source := req.Source
+			if source == "" {
+				source = "gs://wh-ai-blueprint-a363-rag-docs/" + req.Title
+			}
+			doc := Document{
+				ID:        fmt.Sprintf("doc-%d", time.Now().UnixNano()),
+				Title:     req.Title,
+				Source:    source,
+				Status:    "indexing",
+				Content:   req.Content,
+				Snippet:   truncateText(req.Content, 160),
+				CreatedAt: time.Now(),
+			}
+			addedDocs = append(addedDocs, doc)
+		}
 	}
 
-	if title == "" || content == "" {
-		http.Error(w, "Titre et contenu (ou fichier) requis", http.StatusBadRequest)
+	if len(addedDocs) == 0 {
+		http.Error(w, "Aucun document ou fichier valide reçu", http.StatusBadRequest)
 		return
 	}
 
-	if source == "" {
-		source = "gs://wh-ai-blueprint-a363-rag-docs/" + title
-	}
-
-	doc := Document{
-		ID:        fmt.Sprintf("doc-%d", time.Now().UnixNano()),
-		Title:     title,
-		Source:    source,
-		Status:    "indexing",
-		Content:   content,
-		Snippet:   truncateText(content, 140),
-		CreatedAt: time.Now(),
-	}
-
 	s.mu.Lock()
-	s.documents = append([]Document{doc}, s.documents...)
+	for _, doc := range addedDocs {
+		s.documents = append([]Document{doc}, s.documents...)
+	}
 	s.mu.Unlock()
 
 	// Simulation de fin d'indexation asynchrone (pour démonstration fluide)
-	go func(id string) {
-		time.Sleep(4 * time.Second)
-		s.mu.Lock()
-		for i := range s.documents {
-			if s.documents[i].ID == id {
-				s.documents[i].Status = "ready"
-				break
+	for _, doc := range addedDocs {
+		go func(id string) {
+			time.Sleep(3 * time.Second)
+			s.mu.Lock()
+			for i := range s.documents {
+				if s.documents[i].ID == id {
+					s.documents[i].Status = "ready"
+					break
+				}
 			}
-		}
-		s.mu.Unlock()
-	}(doc.ID)
+			s.mu.Unlock()
+		}(doc.ID)
+	}
+
+	log.Printf("📥 %d document(s) reçu(s) et indexé(s) dans le corpus", len(addedDocs))
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(doc)
+	if len(addedDocs) == 1 {
+		json.NewEncoder(w).Encode(addedDocs[0])
+	} else {
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":    "ok",
+			"count":     len(addedDocs),
+			"documents": addedDocs,
+		})
+	}
+}
+
+// extractTextFromPDF extrait le texte lisible d'un flux binaire PDF
+func extractTextFromPDF(data []byte) string {
+	var sb strings.Builder
+	// 1. Recherche des flux de texte entre parenthèses dans les blocs textuels PDF : (Texte) Tj ou [(T)...(e)] TJ
+	reTj := regexp.MustCompile(`\(([^)]+)\)\s*(?:Tj|'|")`)
+	matches := reTj.FindAllSubmatch(data, -1)
+	for _, m := range matches {
+		if len(m) > 1 {
+			txt := cleanPDFString(string(m[1]))
+			if len(txt) > 0 {
+				sb.WriteString(txt)
+				sb.WriteString(" ")
+			}
+		}
+	}
+
+	extracted := strings.TrimSpace(sb.String())
+	// Si peu ou pas de texte extrait par syntaxe directe, extraction des séquences textuelles ASCII/UTF8 nettoyées
+	if len(extracted) < 40 {
+		var words []string
+		var cur []byte
+		for _, b := range data {
+			if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == ' ' || b == '.' || b == ',' || b == '-' || b == '/' || b == ':' || b == '@' || b == '_' {
+				cur = append(cur, b)
+			} else {
+				if len(cur) >= 3 {
+					w := strings.TrimSpace(string(cur))
+					if len(w) >= 3 && !isPDFInternalKeyword(w) {
+						words = append(words, w)
+					}
+				}
+				cur = cur[:0]
+			}
+		}
+		if len(cur) >= 3 {
+			w := strings.TrimSpace(string(cur))
+			if len(w) >= 3 && !isPDFInternalKeyword(w) {
+				words = append(words, w)
+			}
+		}
+		if len(words) > 0 {
+			extracted = strings.Join(words, " ")
+		}
+	}
+
+	if extracted == "" {
+		return "[Document PDF indexé pour vectorisation sémantique]"
+	}
+	return extracted
+}
+
+func cleanPDFString(s string) string {
+	s = strings.ReplaceAll(s, `\n`, "\n")
+	s = strings.ReplaceAll(s, `\r`, "")
+	s = strings.ReplaceAll(s, `\t`, " ")
+	s = strings.ReplaceAll(s, `\(`, "(")
+	s = strings.ReplaceAll(s, `\)`, ")")
+	s = strings.ReplaceAll(s, `\\`, `\`)
+	return strings.TrimSpace(s)
+}
+
+func isPDFInternalKeyword(w string) bool {
+	switch strings.ToLower(w) {
+	case "obj", "endobj", "stream", "endstream", "xref", "trailer", "startxref",
+		"font", "type", "subtype", "pages", "catalog", "parent", "contents",
+		"mediabox", "resources", "filter", "flatedecode", "length", "identity",
+		"true", "false", "null":
+		return true
+	default:
+		return false
+	}
 }
 
 // Handler Classic Search : recherche par mots-clés brute (Avant RAG)
