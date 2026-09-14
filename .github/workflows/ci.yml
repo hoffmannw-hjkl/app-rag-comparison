@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # govulncheck est évalué contre une base de vulnérabilités qui évolue en
+  # continu : le job peut donc passer au rouge sans aucun changement de code.
+  # Un run hebdomadaire fait remonter cette dérive de lui-même, plutôt que de la
+  # faire découvrir par la première PR sans rapport qui viendra ensuite.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,7 +27,11 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          # La version est lue depuis go.mod plutôt que dupliquée ici. C'est le
+          # plancher déclaré qui est réellement compilé et scanné : si une faille
+          # stdlib le rend obsolète, la CI passe au rouge et force sa mise à jour,
+          # au lieu de laisser go.mod annoncer une version devenue vulnérable.
+          go-version-file: src/go.mod
           cache: false
 
       - name: Verify formatting
@@ -59,11 +70,21 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          # La version est lue depuis go.mod plutôt que dupliquée ici. C'est le
+          # plancher déclaré qui est réellement compilé et scanné : si une faille
+          # stdlib le rend obsolète, la CI passe au rouge et force sa mise à jour,
+          # au lieu de laisser go.mod annoncer une version devenue vulnérable.
+          go-version-file: src/go.mod
           cache: false
 
       # govulncheck croise les dépendances et la stdlib avec la base de
       # vulnérabilités Go, en ne signalant que les failles réellement atteignables.
+      #
+      # `go install ...@latest` s'exécute hors module : ces outils exigent un
+      # toolchain plus récent que le plancher de l'application, que Go télécharge
+      # alors automatiquement (« switching to goX.Y.Z » dans les logs). Ce
+      # basculement ne concerne que la compilation de l'outil : l'analyse, elle,
+      # est bien menée sur le toolchain déclaré par src/go.mod.
       - name: Run govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest

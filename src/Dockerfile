@@ -1,5 +1,11 @@
 # Multi-stage Dockerfile pour un conteneur minimal et sans shell
-FROM golang:1.22-alpine AS builder
+
+# Le binaire étant statique et sans dépendance externe, la stdlib compilée ici
+# constitue toute la surface d'attaque de l'image finale : la version du toolchain
+# est donc un paramètre de sécurité, pas un simple détail de build. On suit la
+# ligne stable courante, qui embarque les correctifs net/http, crypto/tls et
+# crypto/x509 exigés par go.mod.
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 
