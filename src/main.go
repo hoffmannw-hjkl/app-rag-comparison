@@ -36,6 +36,31 @@ type SearchChunk struct {
 	SourceURI     string  `json:"source_uri"`
 }
 
+type ModelInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Category    string `json:"category"`
+	IsDefault   bool   `json:"is_default"`
+}
+
+var AvailableModels = []ModelInfo{
+	{
+		ID:          "gemini-2.5-flash",
+		Name:        "Gemini 2.5 Flash",
+		Description: "Dernière génération multimodale ultra-rapide & efficiente de Google",
+		Category:    "Flash",
+		IsDefault:   true,
+	},
+	{
+		ID:          "gemini-2.5-pro",
+		Name:        "Gemini 2.5 Pro",
+		Description: "Raisonnement complexe avancé & synthèse d'architecture approfondie",
+		Category:    "Pro",
+		IsDefault:   false,
+	},
+}
+
 type ServerState struct {
 	mu        sync.RWMutex
 	documents []Document
@@ -100,9 +125,14 @@ func main() {
 	mux.HandleFunc("/api/documents/upload", state.handleUpload)
 	mux.HandleFunc("/api/search/classic", state.handleClassicSearch)
 	mux.HandleFunc("/api/chat/stream", state.handleChatStream)
+	mux.HandleFunc("/api/models", state.handleModels)
+	mux.HandleFunc("/api/model/switch", state.handleModelSwitch)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "healthy", "model": state.modelName})
+		state.mu.RLock()
+		current := state.modelName
+		state.mu.RUnlock()
+		json.NewEncoder(w).Encode(map[string]string{"status": "healthy", "model": current})
 	})
 
 	// Static UI assets
@@ -130,6 +160,60 @@ func (s *ServerState) handleDocuments(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(s.documents)
+}
+
+// Handler Models : liste des modèles disponibles et modèle actuellement actif
+func (s *ServerState) handleModels(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	current := s.modelName
+	s.mu.RUnlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"current":   current,
+		"models":    AvailableModels,
+		"embedding": "text-embedding-005",
+	})
+}
+
+// Handler Model Switch : bascule dynamique du modèle actif
+func (s *ServerState) handleModelSwitch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Méthode non autorisée", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Model == "" {
+		http.Error(w, "Modèle invalide", http.StatusBadRequest)
+		return
+	}
+
+	valid := false
+	for _, m := range AvailableModels {
+		if m.ID == req.Model {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		http.Error(w, fmt.Sprintf("Modèle inconnu : %s", req.Model), http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	s.modelName = req.Model
+	s.mu.Unlock()
+
+	log.Printf("🤖 Modèle actif mis à jour vers : %s", req.Model)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":  "ok",
+		"current": req.Model,
+	})
 }
 
 // Handler Upload : ajout de document (fichier uploadé, texte ou URL) à la volée
@@ -270,6 +354,21 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
+	requestedModel := r.URL.Query().Get("model")
+	s.mu.RLock()
+	currentModel := s.modelName
+	s.mu.RUnlock()
+
+	activeModel := currentModel
+	if requestedModel != "" {
+		for _, m := range AvailableModels {
+			if m.ID == requestedModel {
+				activeModel = requestedModel
+				break
+			}
+		}
+	}
+
 	// 1. Étape de Retrieval (Recherche sémantique)
 	sendSSE("status", map[string]string{
 		"step":    "retrieval",
@@ -284,19 +383,20 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	// 2. Étape de Synthèse Groundée (Appel Vertex AI Gemini avec streaming)
 	sendSSE("status", map[string]string{
 		"step":    "generating",
-		"message": fmt.Sprintf("Génération de la synthèse groundée avec %s...", s.modelName),
+		"model":   activeModel,
+		"message": fmt.Sprintf("Génération de la synthèse groundée avec %s...", activeModel),
 	})
 
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
 	// Appel réel à l'API Vertex AI Gemini via REST avec Bearer Token ambiant (Workload Identity)
-	err := s.streamGeminiResponse(ctx, query, chunks, func(token string) {
+	err := s.streamGeminiResponse(ctx, query, chunks, activeModel, func(token string) {
 		sendSSE("token", token)
 	})
 
 	if err != nil {
-		log.Printf("Erreur streaming Vertex AI: %v. Fallback synthèse locale.", err)
+		log.Printf("Erreur streaming Vertex AI (%s): %v. Fallback synthèse locale.", activeModel, err)
 		// Fallback gracieux en environnement sandbox sans quota Vertex immédiat
 		s.streamLocalFallback(query, chunks, func(token string) {
 			sendSSE("token", token)
@@ -306,6 +406,7 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	// 3. Clôture de l'échange
 	sendSSE("done", map[string]any{
 		"query":     query,
+		"model":     activeModel,
 		"timestamp": time.Now().Format(time.RFC3339),
 		"sources":   chunks,
 	})
@@ -349,7 +450,7 @@ func (s *ServerState) searchDocuments(query string) []SearchChunk {
 }
 
 // Appel direct à l'API Vertex AI Gemini via REST & ADC
-func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, chunks []SearchChunk, onToken func(string)) error {
+func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, chunks []SearchChunk, modelName string, onToken func(string)) error {
 	token := os.Getenv("GOOGLE_OAUTH_ACCESS_TOKEN")
 	if token == "" {
 		// Tenter de lire le token depuis les métadonnées GCE si on est sur GCP
@@ -358,6 +459,12 @@ func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, ch
 
 	if token == "" {
 		return fmt.Errorf("aucun jeton d'authentification GCP disponible")
+	}
+
+	if modelName == "" {
+		s.mu.RLock()
+		modelName = s.modelName
+		s.mu.RUnlock()
 	}
 
 	// Construire le prompt groundé avec le contexte
@@ -370,7 +477,7 @@ func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, ch
 	prompt := fmt.Sprintf("%s\n\nQuestion de l'utilisateur : %s\n\nContexte documentaire disponible :%s", systemInstruction, query, contextBuilder.String())
 
 	apiURL := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:streamGenerateContent?alt=sse",
-		s.region, s.projectID, s.region, s.modelName)
+		s.region, s.projectID, s.region, modelName)
 
 	reqBody := map[string]any{
 		"contents": []map[string]any{

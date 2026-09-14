@@ -13,15 +13,19 @@ Cette application est découplée de l'infrastructure et conçue pour se déploy
 
 ## 🌟 Fonctionnalités Clés
 
-1. **Effet Avant / Après (Toggle & Split-Screen)** :
+1. **Modèles de Dernière Génération (Gemini 2.5 Flash & Pro)** :
+   - **Gemini 2.5 Flash** (Défaut) : Rapidité d'exécution, ultra-faible latence et efficience multimodale.
+   - **Gemini 2.5 Pro** : Raisonnement complexe approfondi et synthèses d'architecture denses.
+   - **Sélecteur Dynamique** : Bascule instantanée de modèle directement depuis la barre d'en-tête, sans redémarrage du conteneur.
+2. **Effet Avant / Après (Toggle & Split-Screen)** :
    - **Mode Recherche Classique** : Affiche les extraits bruts sans synthèse ni compréhension (obligeant l'utilisateur à tout lire).
    - **Mode RAG GenAI** : Génère une synthèse rédigée et sourcée avec citations interactives.
-2. **Transparence du Grounding** :
+3. **Transparence du Grounding** :
    - L'interface affiche en temps réel les documents et passages consultés avant de streamer la réponse finale.
-3. **Gestion Documentaire à la Volée** :
+4. **Gestion Documentaire à la Volée** :
    - Panneau latéral avec statut d'indexation (`Prêt` vs `En cours`).
-   - Modal d'ajout immédiat de nouveaux textes ou URLs dans le corpus.
-4. **Architecture Ultra-Sobre & Rapide** :
+   - Modal d'ajout immédiat de nouveaux textes, fichiers ou URLs dans le corpus.
+5. **Architecture Ultra-Sobre & Rapide** :
    - Backend Go compilé en binaire statique unique (< 25 Mo).
    - Frontend intégré via `embed.FS` (zéro serveur Node.js séparé, démarrage en < 1 seconde sur Cloud Run).
    - Streaming temps réel par **Server-Sent Events (SSE)**.

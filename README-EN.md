@@ -13,15 +13,19 @@ This application is decoupled from infrastructure and ready for instant deployme
 
 ## 🌟 Key Features
 
-1. **Before / After Effect (Toggle & Split-Screen)**:
+1. **Latest Generation Multimodal Models (Gemini 2.5 Flash & Pro)**:
+   - **Gemini 2.5 Flash** (Default): High throughput, ultra-low latency, and cost-effective multimodal grounding.
+   - **Gemini 2.5 Pro**: Advanced multi-step reasoning and detailed architectural synthesis.
+   - **Dynamic Switching**: Change models on-the-fly directly from the header dropdown without restarting the app.
+2. **Before / After Effect (Toggle & Split-Screen)**:
    - **Classic Search Mode**: Displays raw excerpts without synthesis (forcing the user to read through all passages).
    - **GenAI RAG Mode**: Generates an authoritative, cited synthesis with interactive references.
-2. **Grounding Transparency**:
+3. **Grounding Transparency**:
    - Live display of documents and retrieved passages before streaming the final response.
-3. **On-the-fly Document Management**:
+4. **On-the-fly Document Management**:
    - Sidebar panel with indexing status (`Ready` vs `Indexing`).
-   - Modal to add new text or URLs directly into the corpus.
-4. **Ultra-Lean & Fast Architecture**:
+   - Modal to add new text, files, or URLs directly into the corpus.
+5. **Ultra-Lean & Fast Architecture**:
    - Go backend compiled into a single static binary (< 25 MB).
    - Frontend embedded via `embed.FS` (zero separate Node.js server, cold start in < 1 second on Cloud Run).
    - Real-time streaming via **Server-Sent Events (SSE)**.

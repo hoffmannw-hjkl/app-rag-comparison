@@ -42,6 +42,16 @@
       </button>
     </div>
 
+    <!-- Sélecteur de Modèle Gemini 2.5 -->
+    <div class="flex items-center space-x-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800">
+      <i class="fa-solid fa-microchip text-indigo-400 text-xs"></i>
+      <label for="model-selector" class="text-[11px] text-slate-400 font-medium">Modèle :</label>
+      <select id="model-selector" onchange="onModelChange(this.value)" class="bg-transparent text-xs text-indigo-300 font-semibold focus:outline-none cursor-pointer">
+        <option value="gemini-2.5-flash" class="bg-slate-900 text-slate-100">Gemini 2.5 Flash (Défaut)</option>
+        <option value="gemini-2.5-pro" class="bg-slate-900 text-slate-100">Gemini 2.5 Pro (Raisonnement)</option>
+      </select>
+    </div>
+
     <!-- Badges Statut Infra -->
     <div class="hidden md:flex items-center space-x-3 text-xs">
       <span class="flex items-center space-x-1.5 text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20">
@@ -185,6 +195,7 @@
 
   <script>
     let currentMode = 'rag'; // 'rag' ou 'split'
+    let selectedModel = 'gemini-2.5-flash';
 
     function setMode(mode) {
       currentMode = mode;
@@ -197,6 +208,37 @@
       } else {
         btnSplit.className = 'px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-blue-600 text-white shadow-sm flex items-center space-x-2';
         btnRag.className = 'px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 text-slate-400 hover:text-white flex items-center space-x-2';
+      }
+    }
+
+    async function loadModels() {
+      try {
+        const res = await fetch('/api/models');
+        const data = await res.json();
+        const selector = document.getElementById('model-selector');
+        if (data.models && data.models.length > 0) {
+          selector.innerHTML = data.models.map(m => `
+            <option value="${m.id}" ${m.id === data.current ? 'selected' : ''} class="bg-slate-900 text-slate-100">
+              ${m.name} (${m.category})
+            </option>
+          `).join('');
+          selectedModel = data.current;
+        }
+      } catch (err) {
+        console.warn('Impossible de charger les modèles dynamiques:', err);
+      }
+    }
+
+    async function onModelChange(modelId) {
+      selectedModel = modelId;
+      try {
+        await fetch('/api/model/switch', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({model: modelId})
+        });
+      } catch (err) {
+        console.warn('Erreur lors du changement de modèle:', err);
       }
     }
 
@@ -385,7 +427,7 @@
       c.appendChild(resDiv);
       c.scrollTop = c.scrollHeight;
 
-      const eventSource = new EventSource(`/api/chat/stream?q=${encodeURIComponent(query)}`);
+      const eventSource = new EventSource(`/api/chat/stream?q=${encodeURIComponent(query)}&model=${encodeURIComponent(selectedModel)}`);
       const textEl = document.getElementById(contentId);
       const statusEl = document.getElementById(`status-${contentId}`);
       const retrievalEl = document.getElementById(`retrieval-${contentId}`);
@@ -432,6 +474,8 @@
       const ragId = 'split-rag-' + Date.now();
       const classicId = 'split-classic-' + Date.now();
 
+      const modelDisplayName = selectedModel === 'gemini-2.5-pro' ? 'Gemini 2.5 Pro' : 'Gemini 2.5 Flash';
+
       splitDiv.innerHTML = `
         <div class="flex items-center justify-between pb-3 border-b border-slate-800 text-xs">
           <span class="font-bold text-slate-200">🔍 Comparatif Avant / Après : "${query}"</span>
@@ -455,7 +499,7 @@
           <div class="bg-slate-950 border border-blue-500/30 rounded-xl p-4 space-y-3 shadow-lg shadow-blue-500/5">
             <div class="flex items-center space-x-2 text-xs font-bold text-cyan-400">
               <i class="fa-solid fa-wand-magic-sparkles"></i>
-              <span>RAG Synthétisé (Gemini 2.5 + Grounding)</span>
+              <span>RAG Synthétisé (${modelDisplayName} + Grounding)</span>
             </div>
             <p class="text-[11px] text-slate-400 italic">Compréhension, synthèse et citations contextuelles :</p>
             <div id="${ragId}" class="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap"></div>
@@ -484,7 +528,7 @@
         });
 
       // 2. Stream RAG
-      const eventSource = new EventSource(`/api/chat/stream?q=${encodeURIComponent(query)}`);
+      const eventSource = new EventSource(`/api/chat/stream?q=${encodeURIComponent(query)}&model=${encodeURIComponent(selectedModel)}`);
       const ragEl = document.getElementById(ragId);
 
       eventSource.addEventListener('token', (e) => {
@@ -496,6 +540,7 @@
     }
 
     // Chargement initial
+    loadModels();
     loadDocuments();
   </script>
 </body>
