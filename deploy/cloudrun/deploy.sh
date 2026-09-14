@@ -16,7 +16,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --region "${GCP_REGION}" \
   --platform managed \
   --allow-unauthenticated \
-  --set-env-vars "GCP_PROJECT=${GCP_PROJECT},GCP_REGION=${GCP_REGION},GEMINI_MODEL=gemini-2.5-flash"
+  --set-env-vars "GCP_PROJECT=${GCP_PROJECT},GCP_REGION=${GCP_REGION},GEMINI_MODEL=gemini-3.5-flash"
 
 URL=$(gcloud run services describe "${SERVICE_NAME}" --region "${GCP_REGION}" --format='value(status.url)')
 echo "✅ Déploiement Cloud Run réussi : ${URL}"
