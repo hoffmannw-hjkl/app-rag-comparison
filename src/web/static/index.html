@@ -30,7 +30,7 @@
       </div>
     </div>
 
-    <!-- Mode Switcher : Vue RAG / RAG vs Search / Comparateur de Modèles -->
+    <!-- Mode Switcher : Vue RAG / RAG vs Search / Comparateur de Modèles / Triple Comparatif -->
     <div class="flex items-center space-x-1.5 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
       <button id="btn-mode-rag" onclick="setMode('rag')" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-blue-600 text-white shadow-sm flex items-center space-x-1.5">
         <i class="fa-solid fa-wand-magic-sparkles text-cyan-300"></i>
@@ -42,7 +42,11 @@
       </button>
       <button id="btn-mode-models" onclick="setMode('models')" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 text-slate-400 hover:text-white flex items-center space-x-1.5">
         <i class="fa-solid fa-scale-balanced text-purple-400"></i>
-        <span>Comparateur de Modèles</span>
+        <span>Arena Modèles</span>
+      </button>
+      <button id="btn-mode-triple" onclick="setMode('triple')" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 text-slate-400 hover:text-white flex items-center space-x-1.5">
+        <i class="fa-solid fa-table-columns text-emerald-400"></i>
+        <span>RAG 1 / RAG 2 / Recherche</span>
       </button>
     </div>
 
@@ -134,11 +138,12 @@
             <br><br>
             Posez une question technique (ex: <em>"Comment est gérée la sécurité WAF ?"</em> ou <em>"Quels sont les seuils FinOps ?"</em>).
             <div class="mt-3 pt-3 border-t border-slate-800 text-xs text-slate-400 space-y-1">
-              <p>💡 <strong>3 modes de démonstration disponibles dans la barre d'en-tête :</strong></p>
+              <p>💡 <strong>4 modes de démonstration disponibles dans la barre d'en-tête :</strong></p>
               <ul class="list-disc list-inside space-y-0.5 text-slate-300">
                 <li><strong>Vue RAG</strong> : Synthèse sourcée avec le modèle actif & métriques télémétriques.</li>
                 <li><strong>RAG vs Recherche</strong> : Comparatif côte à côte avec une recherche par mots-clés traditionnelle.</li>
-                <li><strong>Comparateur de Modèles (Arena)</strong> : Évaluez en direct deux modèles (ex: <em>Gemini 3.5 Flash</em> vs <em>Gemini 3.8 Flash</em> ou <em>Gemini 3.1 Pro</em>) avec benchmarks de latence (TTFT), durée totale et consommation de tokens.</li>
+                <li><strong>Arena Modèles</strong> : Évaluez en direct deux modèles (ex: <em>Gemini 3.5 Flash</em> vs <em>Gemini 3.8 Flash</em> ou <em>Gemini 3.1 Pro</em>) avec benchmarks de latence (TTFT), durée totale et consommation de tokens.</li>
+                <li><strong>RAG 1 / RAG 2 / Recherche</strong> : Vue 3 colonnes pour comparer simultanément deux modèles GenAI face à la recherche traditionnelle sans IA.</li>
               </ul>
             </div>
           </div>
@@ -226,7 +231,7 @@
   </div>
 
   <script>
-    let currentMode = 'rag'; // 'rag', 'split' ou 'models'
+    let currentMode = 'rag'; // 'rag', 'split', 'models' ou 'triple'
     let selectedModel = 'gemini-3.5-flash';
     let availableModelsList = [];
 
@@ -235,6 +240,7 @@
       const btnRag = document.getElementById('btn-mode-rag');
       const btnSplit = document.getElementById('btn-mode-split');
       const btnModels = document.getElementById('btn-mode-models');
+      const btnTriple = document.getElementById('btn-mode-triple');
       const modelBContainer = document.getElementById('model-b-container');
       const labelModelA = document.getElementById('label-model-a');
 
@@ -244,10 +250,11 @@
       btnRag.className = mode === 'rag' ? activeClass : inactiveClass;
       btnSplit.className = mode === 'split' ? activeClass : inactiveClass;
       btnModels.className = mode === 'models' ? 'px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-purple-600 text-white shadow-sm flex items-center space-x-1.5' : inactiveClass;
+      btnTriple.className = mode === 'triple' ? 'px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-emerald-600 text-white shadow-sm flex items-center space-x-1.5' : inactiveClass;
 
-      if (mode === 'models') {
+      if (mode === 'models' || mode === 'triple') {
         modelBContainer.classList.remove('hidden');
-        labelModelA.innerText = "Modèle A :";
+        labelModelA.innerText = "Modèle 1 :";
       } else {
         modelBContainer.classList.add('hidden');
         labelModelA.innerText = "Modèle :";
@@ -441,7 +448,9 @@
       input.value = '';
       appendUserMessage(query);
 
-      if (currentMode === 'models') {
+      if (currentMode === 'triple') {
+        renderTripleComparison(query);
+      } else if (currentMode === 'models') {
         renderModelsComparison(query);
       } else if (currentMode === 'split') {
         renderSplitResponse(query);
@@ -719,6 +728,183 @@
       c.scrollTop = c.scrollHeight;
 
       // Lancement simultané des streams pour Modèle A et Modèle B
+      const streamToColumn = (mId, containerId, badgeId, ttftId, durationId, tokensId) => {
+        const textEl = document.getElementById(containerId);
+        const badgeEl = document.getElementById(badgeId);
+        const ttftEl = document.getElementById(ttftId);
+        const durEl = document.getElementById(durationId);
+        const tokEl = document.getElementById(tokensId);
+
+        const es = new EventSource(`/api/chat/stream?q=${encodeURIComponent(query)}&model=${encodeURIComponent(mId)}`);
+
+        es.addEventListener('token', (e) => {
+          textEl.innerHTML += JSON.parse(e.data);
+          c.scrollTop = c.scrollHeight;
+        });
+
+        es.addEventListener('metrics', (e) => {
+          const m = JSON.parse(e.data);
+          ttftEl.innerText = `${m.first_token_ms}ms`;
+          durEl.innerText = `${m.total_duration_ms}ms`;
+          tokEl.innerText = `${m.total_tokens}`;
+        });
+
+        es.addEventListener('done', () => {
+          badgeEl.className = 'text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+          badgeEl.innerText = 'Terminé';
+          es.close();
+        });
+
+        es.addEventListener('error', () => {
+          badgeEl.className = 'text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20';
+          badgeEl.innerText = 'Repli local';
+          es.close();
+        });
+      };
+
+      streamToColumn(modelA, idA, `badge-${idA}`, `ttft-${idA}`, `duration-${idA}`, `tokens-${idA}`);
+      streamToColumn(modelB, idB, `badge-${idB}`, `ttft-${idB}`, `duration-${idB}`, `tokens-${idB}`);
+    }
+
+    // 4. Comparatif 3 colonnes : RAG Modèle 1 / RAG Modèle 2 / Recherche Classique
+    async function renderTripleComparison(query) {
+      const c = document.getElementById('messages-container');
+      const modelA = selectedModel;
+      const modelB = document.getElementById('model-b-selector').value;
+
+      const nameA = getModelName(modelA);
+      const nameB = getModelName(modelB);
+
+      const tripleDiv = document.createElement('div');
+      tripleDiv.className = 'w-full bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-xl';
+      
+      const idA = 'triple-a-' + Date.now();
+      const idB = 'triple-b-' + Date.now();
+      const idClassic = 'triple-classic-' + Date.now();
+
+      tripleDiv.innerHTML = `
+        <div class="flex items-center justify-between pb-3 border-b border-slate-800 text-xs">
+          <div class="flex items-center space-x-2">
+            <span class="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30">
+              <i class="fa-solid fa-table-columns mr-1"></i> Triple Comparatif
+            </span>
+            <span class="font-bold text-slate-200">"${query}"</span>
+          </div>
+          <span class="text-slate-400 text-[11px]">RAG Modèle 1 vs RAG Modèle 2 vs Recherche Classique</span>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          
+          <!-- Colonne 1 : RAG Modèle 1 -->
+          <div class="bg-slate-950 border border-blue-500/30 rounded-xl p-4 space-y-3 flex flex-col justify-between shadow-lg shadow-blue-500/5">
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <div class="flex items-center space-x-2 text-xs font-bold text-blue-400">
+                  <span class="w-5 h-5 rounded-full bg-blue-600/30 border border-blue-500/50 flex items-center justify-center text-[10px]">1</span>
+                  <span>RAG ${nameA}</span>
+                </div>
+                <span id="badge-${idA}" class="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 animate-pulse">
+                  Streaming...
+                </span>
+              </div>
+              <div id="${idA}" class="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap min-h-[140px]"></div>
+            </div>
+            
+            <div id="metrics-${idA}" class="pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-1.5 text-center text-[11px] font-mono text-slate-400">
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">1er Token</div>
+                <div class="font-bold text-slate-200 text-xs" id="ttft-${idA}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">Durée</div>
+                <div class="font-bold text-slate-200 text-xs" id="duration-${idA}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">Tokens</div>
+                <div class="font-bold text-slate-200 text-xs" id="tokens-${idA}">--</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Colonne 2 : RAG Modèle 2 -->
+          <div class="bg-slate-950 border border-purple-500/30 rounded-xl p-4 space-y-3 flex flex-col justify-between shadow-lg shadow-purple-500/5">
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <div class="flex items-center space-x-2 text-xs font-bold text-purple-400">
+                  <span class="w-5 h-5 rounded-full bg-purple-600/30 border border-purple-500/50 flex items-center justify-center text-[10px]">2</span>
+                  <span>RAG ${nameB}</span>
+                </div>
+                <span id="badge-${idB}" class="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 animate-pulse">
+                  Streaming...
+                </span>
+              </div>
+              <div id="${idB}" class="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap min-h-[140px]"></div>
+            </div>
+
+            <div id="metrics-${idB}" class="pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-1.5 text-center text-[11px] font-mono text-slate-400">
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">1er Token</div>
+                <div class="font-bold text-slate-200 text-xs" id="ttft-${idB}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">Durée</div>
+                <div class="font-bold text-slate-200 text-xs" id="duration-${idB}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">Tokens</div>
+                <div class="font-bold text-slate-200 text-xs" id="tokens-${idB}">--</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Colonne 3 : Recherche Classique -->
+          <div class="bg-slate-950 border border-amber-500/30 rounded-xl p-4 space-y-3 flex flex-col justify-between shadow-lg shadow-amber-500/5">
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <div class="flex items-center space-x-2 text-xs font-bold text-amber-400">
+                  <span class="w-5 h-5 rounded-full bg-amber-600/30 border border-amber-500/50 flex items-center justify-center text-[10px]">
+                    <i class="fa-solid fa-magnifying-glass text-[9px]"></i>
+                  </span>
+                  <span>Recherche Mots-Clés</span>
+                </div>
+                <span id="badge-${idClassic}" class="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                  Sans IA
+                </span>
+              </div>
+              <p class="text-[11px] text-slate-400 italic mb-2">Extraits documentaires bruts sans compréhension sémantique :</p>
+              <div id="${idClassic}" class="space-y-2 text-xs text-slate-300 min-h-[140px]">
+                <i class="fa-solid fa-circle-notch fa-spin text-slate-500"></i>
+              </div>
+            </div>
+
+            <div class="pt-3 border-t border-slate-800/80 text-[10px] text-slate-500 text-center">
+              Indexation lexicale directe (Keyword Matching)
+            </div>
+          </div>
+
+        </div>
+      `;
+      c.appendChild(tripleDiv);
+      c.scrollTop = c.scrollHeight;
+
+      // 1. Fetch Recherche Classique
+      fetch(`/api/search/classic?q=${encodeURIComponent(query)}`)
+        .then(r => r.json())
+        .then(data => {
+          const el = document.getElementById(idClassic);
+          if (!data.results || data.results.length === 0) {
+            el.innerHTML = '<p class="text-slate-500">Aucun mot-clé direct trouvé.</p>';
+          } else {
+            el.innerHTML = data.results.map(r => `
+              <div class="p-2.5 bg-slate-900 rounded-lg border border-slate-800">
+                <div class="font-semibold text-slate-200 mb-0.5">${r.document_title}</div>
+                <div class="text-[11px] text-slate-400">${r.snippet}</div>
+              </div>
+            `).join('');
+          }
+        });
+
+      // 2. Streams Modèle 1 & Modèle 2
       const streamToColumn = (mId, containerId, badgeId, ttftId, durationId, tokensId) => {
         const textEl = document.getElementById(containerId);
         const badgeEl = document.getElementById(badgeId);
