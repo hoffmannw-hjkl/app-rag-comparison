@@ -808,55 +808,209 @@
         }, 100);
       };
 
-      const es = new EventSource(`/api/chat/stream?q=${encodeURIComponent(query)}&model=${encodeURIComponent(modelId)}`);
+      const activeEvaluations = {};
 
-      es.addEventListener('status', (e) => {
-        try {
-          const d = JSON.parse(e.data);
-          if (d.step === 'retrieval') {
-            updateBadge(
-              'text-[10px] px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-500/30 animate-pulse flex items-center gap-1',
-              `<i class="fa-solid fa-magnifying-glass text-[9px]"></i> <span>Recherche passages...</span>`
-            );
-            updateStatus(`<i class="fa-solid fa-circle-notch fa-spin text-blue-400"></i> <span>${esc(d.message)}</span>`);
-          } else if (d.step === 'generating') {
-            startThinkingTimer();
+    function renderEvaluationTrigger({ textId, query, modelId, chunks }) {
+      const textEl = document.getElementById(textId);
+      if (!textEl) return;
+      activeEvaluations[textId] = { query, modelId, context: (chunks || []).map(c => c.snippet).join('\n---\n') };
+      if (document.getElementById(`eval-container-${textId}`)) return;
+      const evalDiv = document.createElement('div');
+      evalDiv.id = `eval-container-${textId}`;
+      evalDiv.className = 'mt-3 pt-2.5 border-t border-slate-800/80';
+      evalDiv.innerHTML = `
+        <div class="flex items-center justify-between">
+          <button id="btn-eval-${textId}" onclick="triggerEvaluation('${textId}')" class="text-[11px] font-medium text-purple-300 bg-purple-950/40 hover:bg-purple-900/60 border border-purple-500/30 px-2.5 py-1 rounded-lg transition-all flex items-center space-x-1.5 cursor-pointer shadow-sm">
+            <i class="fa-solid fa-scale-balanced text-purple-400"></i>
+            <span>Évaluer la réponse (Vertex AI Autorater)</span>
+          </button>
+          <span class="text-[10px] text-slate-500 italic hidden sm:inline">Ancrage & pertinence à la demande</span>
+        </div>
+        <div id="eval-result-${textId}" class="hidden mt-2.5"></div>
+      `;
+      textEl.parentNode.appendChild(evalDiv);
+      const c = document.getElementById('messages-container');
+      if (c) c.scrollTop = c.scrollHeight;
+    }
+
+    async function triggerEvaluation(textId) {
+      const info = activeEvaluations[textId];
+      if (!info) return;
+      const btn = document.getElementById(`btn-eval-${textId}`);
+      const resContainer = document.getElementById(`eval-result-${textId}`);
+      const textEl = document.getElementById(textId);
+      if (!btn || !resContainer || !textEl) return;
+
+      btn.disabled = true;
+      btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin text-purple-400"></i> <span>Évaluation Vertex AI en cours...</span>`;
+      btn.className = 'text-[11px] font-medium text-purple-300 bg-purple-950/20 border border-purple-500/20 px-2.5 py-1 rounded-lg cursor-wait flex items-center space-x-1.5';
+
+      try {
+        const payload = {
+          query: info.query,
+          model: info.modelId,
+          prediction: textEl.innerText || textEl.textContent,
+          context: info.context
+        };
+
+        const res = await fetch('/api/evaluate', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        btn.innerHTML = `<i class="fa-solid fa-circle-check text-emerald-400"></i> <span class="text-slate-300">Évaluation Complétée</span> <span class="text-[9px] text-slate-500 font-mono">(${data.duration_ms}ms)</span>`;
+        btn.className = 'text-[11px] font-medium text-slate-400 bg-slate-950 border border-slate-800 px-2.5 py-1 rounded-lg flex items-center space-x-1.5 cursor-default';
+
+        const gScore = data.groundedness ? data.groundedness.score : 0;
+        const rScore = data.relevance ? data.relevance.score : 0;
+
+        const getBadgeClass = (score) => {
+          if (score >= 4.0) return 'text-emerald-400 border-emerald-500/30 bg-emerald-950/40';
+          if (score >= 3.0) return 'text-amber-400 border-amber-500/30 bg-amber-950/40';
+          return 'text-rose-400 border-rose-500/30 bg-rose-950/40';
+        };
+
+        const renderStars = (score) => {
+          const full = Math.round(score);
+          let s = '';
+          for (let i = 1; i <= 5; i++) {
+            s += i <= full ? '★' : '☆';
           }
-        } catch (err) {}
-      });
+          return s;
+        };
 
-      es.addEventListener('retrieval', (e) => {
-        try {
-          const raw = JSON.parse(e.data);
-          const chunks = Array.isArray(raw) ? raw : (raw.chunks || []);
-          if (groundEl && Array.isArray(chunks) && chunks.length > 0) {
-            groundEl.classList.remove('hidden');
-            const hasHybrid = chunks.some(ch => ch.search_type === 'hybrid');
-            const modeLabel = hasHybrid ? 'Hybride 🔮' : 'Lexicale 🔍';
-            groundEl.innerHTML = `
-              <div class="flex items-center gap-1.5 flex-wrap text-[10px] text-slate-400 mb-1">
-                <span class="text-cyan-400 font-semibold flex items-center gap-1">
-                  <i class="fa-solid fa-file-circle-check text-[9px]"></i> Grounding (${chunks.length} passages, ${modeLabel}) :
-                </span>
-                ${chunks.map(ch => {
-                  const scorePct = Math.round((ch.score || 0) * 100);
-                  const tip = ch.search_type === 'hybrid'
-                    ? `Score Hybride : ${scorePct}%\n• Sémantique : ${Math.round((ch.semantic_score || 0) * 100)}%\n• Lexical BM25 : ${Math.round((ch.lexical_score || 0) * 100)}%`
-                    : `Score Lexical : ${scorePct}%`;
-                  const scoreBadgeClass = scorePct >= 70 ? 'text-emerald-400' : 'text-cyan-400';
-                  return `<span class="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 truncate max-w-[190px] flex items-center gap-1 cursor-help hover:border-cyan-500/40 transition-colors" title="${esc(tip)}">
-                    <span class="truncate">${esc(ch.document_title)}</span>
-                    <span class="text-[9px] font-mono font-semibold ${scoreBadgeClass}">${scorePct}%</span>
-                  </span>`;
-                }).join('')}
-                <span id="retrieval-time-${textId}" class="text-[9px] text-slate-500 font-mono ml-auto"></span>
+        resContainer.classList.remove('hidden');
+        resContainer.innerHTML = `
+          <div class="bg-slate-950/90 border border-purple-900/40 rounded-xl p-3 space-y-2.5 shadow-md">
+            <div class="flex items-center justify-between text-xs pb-2 border-b border-slate-800">
+              <span class="font-bold text-purple-300 flex items-center gap-1.5">
+                <i class="fa-solid fa-award text-purple-400"></i>
+                <span>Score Global : <span class="font-mono text-white">${data.overall_score.toFixed(1)}/5</span></span>
+              </span>
+              <span class="text-[10px] text-slate-500 font-mono truncate max-w-[200px]" title="${esc(data.evaluator)}">${esc(data.evaluator)}</span>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+              <!-- Ancrage (Groundedness) -->
+              <div class="p-2 rounded-lg border ${getBadgeClass(gScore)} flex flex-col justify-between">
+                <div class="flex items-center justify-between mb-1">
+                  <span class="font-semibold flex items-center gap-1">
+                    <i class="fa-solid fa-anchor text-[10px]"></i> Ancrage (Groundedness)
+                  </span>
+                  <span class="font-mono font-bold">${gScore.toFixed(1)}/5</span>
+                </div>
+                <div class="flex items-center justify-between text-[10px] opacity-80">
+                  <span>${esc(data.groundedness.label || '')}</span>
+                  <span class="tracking-widest">${renderStars(gScore)}</span>
+                </div>
               </div>
-            `;
-            c.scrollTop = c.scrollHeight;
-          }
+
+              <!-- Pertinence (Answer Relevance) -->
+              <div class="p-2 rounded-lg border ${getBadgeClass(rScore)} flex flex-col justify-between">
+                <div class="flex items-center justify-between mb-1">
+                  <span class="font-semibold flex items-center gap-1">
+                    <i class="fa-solid fa-bullseye text-[10px]"></i> Pertinence (Relevance)
+                  </span>
+                  <span class="font-mono font-bold">${rScore.toFixed(1)}/5</span>
+                </div>
+                <div class="flex items-center justify-between text-[10px] opacity-80">
+                  <span>${esc(data.relevance.label || '')}</span>
+                  <span class="tracking-widest">${renderStars(rScore)}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Justifications détaillées de l'Autorater -->
+            ${(data.groundedness.explanation || data.relevance.explanation) ? `
+              <details class="text-[10px] text-slate-400 bg-slate-900/60 rounded-lg p-2 border border-slate-800/80 cursor-pointer">
+                <summary class="font-semibold text-slate-300 hover:text-purple-300 transition-colors flex items-center justify-between">
+                  <span><i class="fa-solid fa-brain text-purple-400 mr-1"></i> Consulter l'audit et le raisonnement de l'Autorater</span>
+                  <i class="fa-solid fa-chevron-down text-[8px]"></i>
+                </summary>
+                <div class="mt-2 pt-2 border-t border-slate-800 space-y-2 text-slate-300 font-sans leading-relaxed">
+                  ${data.groundedness.explanation ? `
+                    <div>
+                      <span class="text-cyan-400 font-semibold block mb-0.5">🔹 Justification Ancrage :</span>
+                      <p class="whitespace-pre-wrap bg-slate-950 p-2 rounded border border-slate-900 font-mono text-[9px] text-slate-300">${esc(data.groundedness.explanation)}</p>
+                    </div>
+                  ` : ''}
+                  ${data.relevance.explanation ? `
+                    <div>
+                      <span class="text-purple-400 font-semibold block mb-0.5">🔹 Justification Pertinence :</span>
+                      <p class="whitespace-pre-wrap bg-slate-950 p-2 rounded border border-slate-900 font-mono text-[9px] text-slate-300">${esc(data.relevance.explanation)}</p>
+                    </div>
+                  ` : ''}
+                </div>
+              </details>
+            ` : ''}
+          </div>
+        `;
+
+        const c = document.getElementById('messages-container');
+        if (c) c.scrollTop = c.scrollHeight;
+      } catch (err) {
+        console.error("Échec de l'évaluation:", err);
+        btn.disabled = false;
+        btn.className = 'text-[11px] font-medium text-rose-300 bg-rose-950/40 hover:bg-rose-900/60 border border-rose-500/30 px-2.5 py-1 rounded-lg cursor-pointer flex items-center space-x-1.5';
+        btn.innerHTML = `<i class="fa-solid fa-rotate-right text-rose-400"></i> <span>Réessayer l'évaluation</span>`;
+      }
+    }
+
+    const es = new EventSource(`/api/chat/stream?q=${encodeURIComponent(query)}&model=${encodeURIComponent(modelId)}`);
+    let currentChunks = [];
+
+    es.addEventListener('status', (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        if (d.step === 'retrieval') {
+          updateBadge(
+            'text-[10px] px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-500/30 animate-pulse flex items-center gap-1',
+            `<i class="fa-solid fa-magnifying-glass text-[9px]"></i> <span>Recherche passages...</span>`
+          );
+          updateStatus(`<i class="fa-solid fa-circle-notch fa-spin text-blue-400"></i> <span>${esc(d.message)}</span>`);
+        } else if (d.step === 'generating') {
           startThinkingTimer();
-        } catch (err) {}
-      });
+        }
+      } catch (err) {}
+    });
+
+    es.addEventListener('retrieval', (e) => {
+      try {
+        const raw = JSON.parse(e.data);
+        const chunks = Array.isArray(raw) ? raw : (raw.chunks || []);
+        currentChunks = chunks;
+        if (groundEl && Array.isArray(chunks) && chunks.length > 0) {
+          groundEl.classList.remove('hidden');
+          const hasHybrid = chunks.some(ch => ch.search_type === 'hybrid');
+          const modeLabel = hasHybrid ? 'Hybride 🔮' : 'Lexicale 🔍';
+          groundEl.innerHTML = `
+            <div class="flex items-center gap-1.5 flex-wrap text-[10px] text-slate-400 mb-1">
+              <span class="text-cyan-400 font-semibold flex items-center gap-1">
+                <i class="fa-solid fa-file-circle-check text-[9px]"></i> Grounding (${chunks.length} passages, ${modeLabel}) :
+              </span>
+              ${chunks.map(ch => {
+                const scorePct = Math.round((ch.score || 0) * 100);
+                const tip = ch.search_type === 'hybrid'
+                  ? `Score Hybride : ${scorePct}%\n• Sémantique : ${Math.round((ch.semantic_score || 0) * 100)}%\n• Lexical BM25 : ${Math.round((ch.lexical_score || 0) * 100)}%`
+                  : `Score Lexical : ${scorePct}%`;
+                const scoreBadgeClass = scorePct >= 70 ? 'text-emerald-400' : 'text-cyan-400';
+                return `<span class="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 truncate max-w-[190px] flex items-center gap-1 cursor-help hover:border-cyan-500/40 transition-colors" title="${esc(tip)}">
+                  <span class="truncate">${esc(ch.document_title)}</span>
+                  <span class="text-[9px] font-mono font-semibold ${scoreBadgeClass}">${scorePct}%</span>
+                </span>`;
+              }).join('')}
+              <span id="retrieval-time-${textId}" class="text-[9px] text-slate-500 font-mono ml-auto"></span>
+            </div>
+          `;
+          c.scrollTop = c.scrollHeight;
+        }
+        startThinkingTimer();
+      } catch (err) {}
+    });
 
       es.addEventListener('token', (e) => {
         if (!firstTokenReceived) {
@@ -898,6 +1052,13 @@
         );
         if (statusEl) statusEl.remove();
         es.close();
+
+        renderEvaluationTrigger({
+          textId,
+          query,
+          modelId,
+          chunks: currentChunks
+        });
       });
 
       es.addEventListener('error', () => {

@@ -1235,3 +1235,138 @@ func TestEnsureCorpusEmbeddingsWithMockServer(t *testing.T) {
 	}
 }
 
+func TestHandleEvaluateWithMockServer(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+
+		if _, ok := body["groundedness_input"]; ok {
+			json.NewEncoder(w).Encode(map[string]any{
+				"groundednessResult": map[string]any{
+					"score":       1.0,
+					"explanation": "La réponse est entièrement ancrée dans le contexte.",
+					"confidence":  1.0,
+				},
+			})
+			return
+		}
+
+		if _, ok := body["question_answering_relevance_input"]; ok {
+			json.NewEncoder(w).Encode(map[string]any{
+				"questionAnsweringRelevanceResult": map[string]any{
+					"score":       5.0,
+					"explanation": "La réponse répond parfaitement à la question.",
+					"confidence":  0.95,
+				},
+			})
+			return
+		}
+
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer ts.Close()
+
+	s := &ServerState{
+		evalEndpoint: ts.URL,
+		projectID:    "mock-project",
+		region:       "europe-west1",
+	}
+
+	evalReq := EvaluationRequest{
+		Query:      "Comment fonctionne Cloud Armor ?",
+		Model:      "gemini-3.5-flash",
+		Prediction: "Cloud Armor est un service de sécurité WAF anti-DDoS.",
+		Context:    "Cloud Armor fournit un WAF managé et une protection anti-DDoS.",
+	}
+	bodyBytes, _ := json.Marshal(evalReq)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/evaluate", bytes.NewReader(bodyBytes))
+	w := httptest.NewRecorder()
+	s.handleEvaluate(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("handleEvaluate code = %d, attendu %d (body: %s)", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp EvaluationResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("décodage json response impossible: %v", err)
+	}
+
+	if resp.Groundedness.Score != 5.0 {
+		t.Errorf("groundedness score = %f, attendu 5.0", resp.Groundedness.Score)
+	}
+	if resp.Relevance.Score != 5.0 {
+		t.Errorf("relevance score = %f, attendu 5.0", resp.Relevance.Score)
+	}
+	if resp.OverallScore != 5.0 {
+		t.Errorf("overall score = %f, attendu 5.0", resp.OverallScore)
+	}
+	if !strings.Contains(resp.Evaluator, "Vertex AI Rapid Evaluation") {
+		t.Errorf("evaluator inattendu: %q", resp.Evaluator)
+	}
+}
+
+func TestHandleEvaluateFallback(t *testing.T) {
+	// Endpoint invalide pour forcer le repli heuristique
+	s := &ServerState{
+		evalEndpoint: "http://127.0.0.1:1/nonexistent",
+		projectID:    "mock-project",
+		region:       "europe-west1",
+	}
+
+	evalReq := EvaluationRequest{
+		Query:      "Quels sont les mécanismes de protection WAF ?",
+		Model:      "gemini-3.5-flash",
+		Prediction: "Cloud Armor assure la protection WAF et anti-DDoS.",
+		Context:    "Cloud Armor est le WAF Google Cloud avec protection anti-DDoS L7.",
+	}
+	bodyBytes, _ := json.Marshal(evalReq)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/evaluate", bytes.NewReader(bodyBytes))
+	w := httptest.NewRecorder()
+	s.handleEvaluate(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("handleEvaluate fallback code = %d, attendu 200", w.Code)
+	}
+
+	var resp EvaluationResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("décodage json response impossible: %v", err)
+	}
+
+	if resp.Groundedness.Score <= 0 || resp.Relevance.Score <= 0 {
+		t.Errorf("scores attendus > 0 lors du repli heuristique, obtenu g=%f r=%f",
+			resp.Groundedness.Score, resp.Relevance.Score)
+	}
+	if !strings.Contains(resp.Evaluator, "Repli Heuristique") {
+		t.Errorf("evaluator attendu 'Repli Heuristique', obtenu %q", resp.Evaluator)
+	}
+}
+
+func TestHandleEvaluateValidation(t *testing.T) {
+	s := &ServerState{}
+
+	// Requête GET refusée
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/evaluate", nil)
+	wGet := httptest.NewRecorder()
+	s.handleEvaluate(wGet, reqGet)
+	if wGet.Code != http.StatusMethodNotAllowed {
+		t.Errorf("code GET = %d, attendu 405", wGet.Code)
+	}
+
+	// Payload vide refusé
+	reqEmpty := httptest.NewRequest(http.MethodPost, "/api/evaluate", bytes.NewReader([]byte(`{"query":""}`)))
+	wEmpty := httptest.NewRecorder()
+	s.handleEvaluate(wEmpty, reqEmpty)
+	if wEmpty.Code != http.StatusBadRequest {
+		t.Errorf("code payload vide = %d, attendu 400", wEmpty.Code)
+	}
+}
+

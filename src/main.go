@@ -135,6 +135,7 @@ type ServerState struct {
 	gcsBucket     string // Nom du bucket Cloud Storage pour la persistance du corpus
 	gcsEndpoint   string // Surcharge de l'endpoint de base GCS pour les tests unitaires
 	embedEndpoint string // Surcharge de l'endpoint Vertex AI Embeddings pour les tests unitaires
+	evalEndpoint  string // Surcharge de l'endpoint Vertex AI Evaluation pour les tests unitaires
 }
 
 // Structures pour la persistance et synchronisation du corpus sur Cloud Storage (index/corpus.json)
@@ -300,6 +301,7 @@ func main() {
 	mux.HandleFunc("/api/chat/stream", state.handleChatStream)
 	mux.HandleFunc("/api/models", state.handleModels)
 	mux.HandleFunc("/api/model/switch", state.handleModelSwitch)
+	mux.HandleFunc("/api/evaluate", state.handleEvaluate)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		state.mu.RLock()
@@ -2387,4 +2389,319 @@ func truncateText(text string, maxLen int) string {
 	}
 	runes := []rune(text)
 	return string(runes[:maxLen]) + "..."
+}
+
+// Structures pour l'Évaluation GenAI à la demande (Vertex AI EvaluateInstances)
+type EvaluationRequest struct {
+	Query      string `json:"query"`
+	Model      string `json:"model,omitempty"`
+	Prediction string `json:"prediction"`
+	Context    string `json:"context,omitempty"`
+}
+
+type MetricEvaluation struct {
+	Score       float64 `json:"score"`
+	MaxScore    float64 `json:"max_score"`
+	Confidence  float64 `json:"confidence,omitempty"`
+	Explanation string  `json:"explanation,omitempty"`
+	Label       string  `json:"label"`
+}
+
+type EvaluationResponse struct {
+	Groundedness MetricEvaluation `json:"groundedness"`
+	Relevance    MetricEvaluation `json:"relevance"`
+	OverallScore float64          `json:"overall_score"`
+	DurationMS   int64            `json:"duration_ms"`
+	Evaluator    string           `json:"evaluator"`
+	EvaluatedAt  time.Time        `json:"evaluated_at"`
+}
+
+// evaluateMetricVertexAI appelle l'API REST de Vertex AI Evaluation (evaluateInstances).
+// metricName : "groundedness" ou "question_answering_relevance".
+func (s *ServerState) evaluateMetricVertexAI(ctx context.Context, metricName string, evalReq EvaluationRequest) (*MetricEvaluation, error) {
+	var token string
+	if s.evalEndpoint != "" {
+		token = "mock-test-token"
+	} else {
+		token = getGCPToken()
+		if token == "" {
+			return nil, fmt.Errorf("jeton GCP manquant pour Vertex AI Evaluation")
+		}
+	}
+
+	apiURL := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s:evaluateInstances",
+		s.region, s.projectID, s.region)
+	if s.evalEndpoint != "" {
+		apiURL = s.evalEndpoint
+	}
+
+	var reqBody map[string]any
+	switch metricName {
+	case "groundedness":
+		reqBody = map[string]any{
+			"groundedness_input": map[string]any{
+				"metric_spec": map[string]any{
+					"version": 1,
+				},
+				"instance": map[string]any{
+					"prediction": evalReq.Prediction,
+					"context":    evalReq.Context,
+				},
+			},
+		}
+	case "question_answering_relevance":
+		reqBody = map[string]any{
+			"question_answering_relevance_input": map[string]any{
+				"metric_spec": map[string]any{
+					"version": 1,
+				},
+				"instance": map[string]any{
+					"instruction": evalReq.Query,
+					"prediction":  evalReq.Prediction,
+					"context":     evalReq.Context,
+				},
+			},
+		}
+	default:
+		return nil, fmt.Errorf("métrique d'évaluation non supportée : %s", metricName)
+	}
+
+	jsonBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(jsonBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("appel Vertex EvaluateInstances échoué : %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("erreur HTTP Vertex Evaluation %d: %s", resp.StatusCode, string(body))
+	}
+
+	var vResp struct {
+		GroundednessResult *struct {
+			Score       float64 `json:"score"`
+			Explanation string  `json:"explanation"`
+			Confidence  float64 `json:"confidence"`
+		} `json:"groundednessResult,omitempty"`
+		QARelevanceResult *struct {
+			Score       float64 `json:"score"`
+			Explanation string  `json:"explanation"`
+			Confidence  float64 `json:"confidence"`
+		} `json:"questionAnsweringRelevanceResult,omitempty"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&vResp); err != nil {
+		return nil, fmt.Errorf("décodage réponse Vertex Evaluation impossible : %w", err)
+	}
+
+	if metricName == "groundedness" {
+		if vResp.GroundednessResult == nil {
+			return nil, fmt.Errorf("aucun résultat groundedness retourné par Vertex AI")
+		}
+		rawScore := vResp.GroundednessResult.Score
+		// Si le score est sur l'intervalle [0, 1], conversion sur une échelle de 5 étoiles
+		score5 := rawScore
+		if rawScore <= 1.0 {
+			score5 = math.Round(rawScore*50) / 10
+		}
+		label := "Ancrage Partiel"
+		if score5 >= 4.5 {
+			label = "Parfaitement Ancré"
+		} else if score5 >= 3.5 {
+			label = "Bon Ancrage"
+		} else if score5 < 2.5 {
+			label = "Faible Ancrage"
+		}
+		return &MetricEvaluation{
+			Score:       score5,
+			MaxScore:    5.0,
+			Confidence:  vResp.GroundednessResult.Confidence,
+			Explanation: vResp.GroundednessResult.Explanation,
+			Label:       label,
+		}, nil
+	}
+
+	if vResp.QARelevanceResult == nil {
+		return nil, fmt.Errorf("aucun résultat relevance retourné par Vertex AI")
+	}
+	score := vResp.QARelevanceResult.Score
+	label := "Moyennement Pertinent"
+	if score >= 4.5 {
+		label = "Très Pertinent"
+	} else if score >= 3.5 {
+		label = "Pertinent"
+	} else if score < 2.5 {
+		label = "Peu Pertinent"
+	}
+
+	return &MetricEvaluation{
+		Score:       score,
+		MaxScore:    5.0,
+		Confidence:  vResp.QARelevanceResult.Confidence,
+		Explanation: vResp.QARelevanceResult.Explanation,
+		Label:       label,
+	}, nil
+}
+
+// fallbackEvaluation calcule une estimation heuristique robuste en cas d'indisponibilité du service d'évaluation
+func fallbackEvaluation(query, prediction, docContext string) (*MetricEvaluation, *MetricEvaluation) {
+	normPred := normalizeForSearch(prediction)
+	normCtx := normalizeForSearch(docContext)
+	normQuery := normalizeForSearch(query)
+
+	queryTerms := significantTerms(normQuery)
+	predTerms := significantTerms(normPred)
+
+	// Estimation Ancrage : proportion des termes significatifs de la réponse présents dans le contexte
+	matchedInCtx := 0
+	for _, term := range predTerms {
+		if strings.Contains(normCtx, term) {
+			matchedInCtx++
+		}
+	}
+	ratioGrounded := 0.8
+	if len(predTerms) > 0 {
+		ratioGrounded = float64(matchedInCtx) / float64(len(predTerms))
+	}
+	gScore := math.Min(5.0, math.Max(1.0, math.Round(ratioGrounded*50)/10))
+	gLabel := "Bon Ancrage (Heuristique)"
+	if gScore >= 4.5 {
+		gLabel = "Parfaitement Ancré (Heuristique)"
+	} else if gScore < 3.0 {
+		gLabel = "Ancrage Partiel (Heuristique)"
+	}
+
+	// Estimation Pertinence : proportion des termes de la question présents dans la réponse
+	matchedInPred := 0
+	for _, term := range queryTerms {
+		if strings.Contains(normPred, term) {
+			matchedInPred++
+		}
+	}
+	ratioRel := 0.85
+	if len(queryTerms) > 0 {
+		ratioRel = float64(matchedInPred) / float64(len(queryTerms))
+	}
+	rScore := math.Min(5.0, math.Max(1.0, math.Round(ratioRel*50)/10))
+	rLabel := "Pertinent (Heuristique)"
+	if rScore >= 4.5 {
+		rLabel = "Très Pertinent (Heuristique)"
+	} else if rScore < 3.0 {
+		rLabel = "Peu Pertinent (Heuristique)"
+	}
+
+	gMetric := &MetricEvaluation{
+		Score:       gScore,
+		MaxScore:    5.0,
+		Confidence:  0.8,
+		Explanation: fmt.Sprintf("Évaluation heuristique de repli : %d/%d termes de la synthèse identifiés dans les sources documentaires.", matchedInCtx, len(predTerms)),
+		Label:       gLabel,
+	}
+
+	rMetric := &MetricEvaluation{
+		Score:       rScore,
+		MaxScore:    5.0,
+		Confidence:  0.8,
+		Explanation: fmt.Sprintf("Évaluation heuristique de repli : %d/%d termes de la requête traités dans la synthèse.", matchedInPred, len(queryTerms)),
+		Label:       rLabel,
+	}
+
+	return gMetric, rMetric
+}
+
+// handleEvaluate évalue la fidélité documentaire et la pertinence d'une réponse RAG via Vertex AI EvaluateInstances.
+func (s *ServerState) handleEvaluate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Méthode non autorisée", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req EvaluationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Requête JSON invalide: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(req.Query) == "" || strings.TrimSpace(req.Prediction) == "" {
+		http.Error(w, "Les champs 'query' et 'prediction' sont obligatoires", http.StatusBadRequest)
+		return
+	}
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	// Si le contexte n'a pas été fourni par le client, récupération des passages pertinents du corpus
+	docContext := req.Context
+	if strings.TrimSpace(docContext) == "" {
+		chunks, _ := s.searchDocumentsHybrid(ctx, req.Query)
+		var sb strings.Builder
+		for i, c := range chunks {
+			if i > 0 {
+				sb.WriteString("\n---\n")
+			}
+			sb.WriteString(c.Snippet)
+		}
+		docContext = sb.String()
+		req.Context = docContext
+	}
+
+	// Évaluation concurrente : Groundedness et Relevance
+	var gMetric, rMetric *MetricEvaluation
+	var gErr, rErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		gMetric, gErr = s.evaluateMetricVertexAI(ctx, "groundedness", req)
+	}()
+
+	go func() {
+		defer wg.Done()
+		rMetric, rErr = s.evaluateMetricVertexAI(ctx, "question_answering_relevance", req)
+	}()
+
+	wg.Wait()
+
+	evaluator := "Vertex AI Rapid Evaluation (Autorater)"
+	if gErr != nil || rErr != nil {
+		log.Printf("ℹ️  Vertex AI Evaluation non disponible (Groundedness: %v, Relevance: %v) -> repli heuristique", gErr, rErr)
+		evaluator = "Repli Heuristique Standard (Vertex AI hors ligne)"
+		fallbackG, fallbackR := fallbackEvaluation(req.Query, req.Prediction, docContext)
+		if gMetric == nil {
+			gMetric = fallbackG
+		}
+		if rMetric == nil {
+			rMetric = fallbackR
+		}
+	}
+
+	overallScore := math.Round(((gMetric.Score+rMetric.Score)/2.0)*10) / 10
+	duration := time.Since(start)
+
+	resp := EvaluationResponse{
+		Groundedness: *gMetric,
+		Relevance:    *rMetric,
+		OverallScore: overallScore,
+		DurationMS:   duration.Milliseconds(),
+		Evaluator:    evaluator,
+		EvaluatedAt:  time.Now().UTC(),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
