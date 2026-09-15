@@ -14,7 +14,9 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -120,11 +122,106 @@ var AvailableModels = []ModelInfo{
 }
 
 type ServerState struct {
-	mu        sync.RWMutex
-	documents []Document
-	projectID string
-	region    string
-	modelName string
+	mu          sync.RWMutex
+	documents   []Document
+	projectID   string
+	region      string
+	modelName   string
+	gcsBucket   string // Nom du bucket Cloud Storage pour la persistance du corpus
+	gcsEndpoint string // Surcharge de l'endpoint de base GCS pour les tests unitaires
+}
+
+// Structures pour la persistance et synchronisation du corpus sur Cloud Storage (index/corpus.json)
+type StoredChunk struct {
+	Index int    `json:"index"`
+	Text  string `json:"text"`
+}
+
+type StoredDocument struct {
+	ID        string        `json:"id"`
+	Title     string        `json:"title"`
+	Source    string        `json:"source"`
+	Status    string        `json:"status"`
+	Content   string        `json:"content"`
+	Chunks    []StoredChunk `json:"chunks"`
+	Snippet   string        `json:"snippet"`
+	SizeBytes int           `json:"size_bytes"`
+	NumChunks int           `json:"num_chunks"`
+	CreatedAt time.Time     `json:"created_at"`
+}
+
+type CorpusSnapshot struct {
+	Version   int              `json:"version"`
+	UpdatedAt time.Time        `json:"updated_at"`
+	Documents []StoredDocument `json:"documents"`
+}
+
+const corpusSnapshotPath = "index/corpus.json"
+
+func (d Document) toStored() StoredDocument {
+	chunks := make([]StoredChunk, len(d.Chunks))
+	for i, c := range d.Chunks {
+		chunks[i] = StoredChunk{
+			Index: c.Index,
+			Text:  c.Text,
+		}
+	}
+	return StoredDocument{
+		ID:        d.ID,
+		Title:     d.Title,
+		Source:    d.Source,
+		Status:    d.Status,
+		Content:   d.Content,
+		Chunks:    chunks,
+		Snippet:   d.Snippet,
+		SizeBytes: d.SizeBytes,
+		NumChunks: d.NumChunks,
+		CreatedAt: d.CreatedAt,
+	}
+}
+
+func storedToDocument(sd StoredDocument) Document {
+	chunks := make([]Chunk, len(sd.Chunks))
+	for i, sc := range sd.Chunks {
+		chunks[i] = Chunk{
+			Index: sc.Index,
+			Text:  sc.Text,
+			norm:  normalizeForSearch(sc.Text),
+		}
+	}
+	if len(chunks) == 0 && sd.Content != "" {
+		chunks = chunkText(sd.Content)
+	}
+	status := sd.Status
+	if status == "" {
+		status = "ready"
+	}
+	numChunks := sd.NumChunks
+	if numChunks == 0 {
+		numChunks = len(chunks)
+	}
+	sizeBytes := sd.SizeBytes
+	if sizeBytes == 0 {
+		sizeBytes = len(sd.Content)
+	}
+	snippet := sd.Snippet
+	if snippet == "" && len(chunks) > 0 {
+		snippet = truncateText(chunks[0].Text, 250)
+	}
+
+	return Document{
+		ID:        sd.ID,
+		Title:     sd.Title,
+		Source:    sd.Source,
+		Status:    status,
+		Content:   sd.Content,
+		Chunks:    chunks,
+		Snippet:   snippet,
+		SizeBytes: sizeBytes,
+		NumChunks: numChunks,
+		CreatedAt: sd.CreatedAt,
+		normTitle: normalizeForSearch(sd.Title),
+	}
 }
 
 func main() {
@@ -140,11 +237,18 @@ func main() {
 	if modelName == "" {
 		modelName = "gemini-3.5-flash"
 	}
+	gcsBucket := os.Getenv("GCS_RAG_BUCKET")
+	if gcsBucket == "" {
+		gcsBucket = "wh-ai-blueprint-a363-ai-demo-2e2m-rag-docs"
+	} else if gcsBucket == "none" || gcsBucket == "disabled" {
+		gcsBucket = ""
+	}
 
 	state := &ServerState{
 		projectID: projectID,
 		region:    region,
 		modelName: modelName,
+		gcsBucket: gcsBucket,
 		documents: []Document{
 			newDocument("doc-1",
 				"Google Cloud Architecture - Elevate & Spark Standards",
@@ -162,6 +266,13 @@ func main() {
 				"L'exportation de journaux Kubernetes vers BigQuery nécessite des filtres stricts d'exclusion pour éliminer les champs polymorphes tels que jsonPayload.address qui provoquent l'erreur table_invalid_schema. Les pods de kube-system doivent être filtrés.",
 				time.Now().Add(-30*time.Minute)),
 		},
+	}
+
+	// Restauration du snapshot persistant depuis GCS si configuré
+	if state.gcsBucket != "" {
+		initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		state.initCorpusFromGCS(initCtx)
+		initCancel()
 	}
 
 	mux := http.NewServeMux()
@@ -247,12 +358,18 @@ func (s *ServerState) handleDocuments(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.mu.Lock()
-		defer s.mu.Unlock()
-
 		if all {
+			s.mu.Lock()
 			deletedCount := len(s.documents)
 			s.documents = []Document{}
+			s.mu.Unlock()
+
+			if s.gcsBucket != "" {
+				if err := s.saveCorpusSnapshot(r.Context()); err != nil {
+					log.Printf("⚠️  Erreur mise à jour snapshot GCS après purge : %v", err)
+				}
+			}
+
 			log.Printf("🗑️  Purge complète du corpus documentaire (%d documents supprimés)", deletedCount)
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
@@ -263,6 +380,7 @@ func (s *ServerState) handleDocuments(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		s.mu.Lock()
 		found := false
 		filtered := make([]Document, 0, len(s.documents))
 		var deletedTitle string
@@ -276,12 +394,21 @@ func (s *ServerState) handleDocuments(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if !found {
+			s.mu.Unlock()
 			http.Error(w, fmt.Sprintf("Document non trouvé : %s", id), http.StatusNotFound)
 			return
 		}
 
 		s.documents = filtered
 		remCount := len(s.documents)
+		s.mu.Unlock()
+
+		if s.gcsBucket != "" {
+			if err := s.saveCorpusSnapshot(r.Context()); err != nil {
+				log.Printf("⚠️  Erreur mise à jour snapshot GCS après suppression : %v", err)
+			}
+		}
+
 		log.Printf("🗑️  Document %q (id: %s) supprimé (%d restants)", deletedTitle, id, remCount)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -301,13 +428,15 @@ func (s *ServerState) handleDocuments(w http.ResponseWriter, r *http.Request) {
 func (s *ServerState) handleModels(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	current := s.modelName
+	bucket := s.gcsBucket
 	s.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"current":   current,
-		"models":    AvailableModels,
-		"embedding": "text-embedding-005",
+		"current":    current,
+		"models":     AvailableModels,
+		"embedding":  "text-embedding-005",
+		"gcs_bucket": bucket,
 	})
 }
 
@@ -404,10 +533,28 @@ func (s *ServerState) handleUpload(w http.ResponseWriter, r *http.Request) {
 				}
 				extracted = strings.ToValidUTF8(extracted, "")
 
+				docID := fmt.Sprintf("doc-%d-%d", time.Now().UnixNano(), i)
+				sourceURI := "gs://wh-ai-blueprint-a363-rag-docs/" + name
+				if s.gcsBucket != "" {
+					sourceURI = fmt.Sprintf("gs://%s/documents/%s/%s", s.gcsBucket, docID, name)
+					rawPath := fmt.Sprintf("documents/%s/%s", docID, name)
+					cType := fh.Header.Get("Content-Type")
+					if cType == "" {
+						cType = "application/octet-stream"
+					}
+					go func(path, ct string, b []byte) {
+						bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						defer cancel()
+						if err := s.uploadToGCS(bgCtx, path, ct, b); err != nil {
+							log.Printf("⚠️  Échec upload fichier brut GCS %s: %v", path, err)
+						}
+					}(rawPath, cType, data)
+				}
+
 				addedDocs = append(addedDocs, newDocument(
-					fmt.Sprintf("doc-%d-%d", time.Now().UnixNano(), i),
+					docID,
 					name,
-					"gs://wh-ai-blueprint-a363-rag-docs/"+name,
+					sourceURI,
 					extracted,
 					time.Now(),
 				))
@@ -418,11 +565,26 @@ func (s *ServerState) handleUpload(w http.ResponseWriter, r *http.Request) {
 			content := strings.ToValidUTF8(r.FormValue("content"), "")
 			source := r.FormValue("source")
 			if title != "" && content != "" {
+				docID := fmt.Sprintf("doc-%d", time.Now().UnixNano())
 				if source == "" {
-					source = "gs://wh-ai-blueprint-a363-rag-docs/" + title
+					if s.gcsBucket != "" {
+						source = fmt.Sprintf("gs://%s/documents/%s/%s.txt", s.gcsBucket, docID, title)
+					} else {
+						source = "gs://wh-ai-blueprint-a363-rag-docs/" + title
+					}
+				}
+				if s.gcsBucket != "" {
+					rawPath := fmt.Sprintf("documents/%s/%s.txt", docID, title)
+					go func(path string, b []byte) {
+						bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						defer cancel()
+						if err := s.uploadToGCS(bgCtx, path, "text/plain; charset=utf-8", b); err != nil {
+							log.Printf("⚠️  Échec upload texte brut GCS %s: %v", path, err)
+						}
+					}(rawPath, []byte(content))
 				}
 				addedDocs = append(addedDocs, newDocument(
-					fmt.Sprintf("doc-%d", time.Now().UnixNano()), title, source, content, time.Now()))
+					docID, title, source, content, time.Now()))
 			}
 		}
 	} else {
@@ -440,12 +602,27 @@ func (s *ServerState) handleUpload(w http.ResponseWriter, r *http.Request) {
 		title := sanitizeFilename(req.Title)
 		content := strings.ToValidUTF8(req.Content, "")
 		if title != "" && content != "" {
+			docID := fmt.Sprintf("doc-%d", time.Now().UnixNano())
 			source := req.Source
 			if source == "" {
-				source = "gs://wh-ai-blueprint-a363-rag-docs/" + title
+				if s.gcsBucket != "" {
+					source = fmt.Sprintf("gs://%s/documents/%s/%s.txt", s.gcsBucket, docID, title)
+				} else {
+					source = "gs://wh-ai-blueprint-a363-rag-docs/" + title
+				}
+			}
+			if s.gcsBucket != "" {
+				rawPath := fmt.Sprintf("documents/%s/%s.txt", docID, title)
+				go func(path string, b []byte) {
+					bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					if err := s.uploadToGCS(bgCtx, path, "text/plain; charset=utf-8", b); err != nil {
+						log.Printf("⚠️  Échec upload texte brut GCS %s: %v", path, err)
+					}
+				}(rawPath, []byte(content))
 			}
 			addedDocs = append(addedDocs, newDocument(
-				fmt.Sprintf("doc-%d", time.Now().UnixNano()), title, source, content, time.Now()))
+				docID, title, source, content, time.Now()))
 		}
 	}
 
@@ -454,16 +631,6 @@ func (s *ServerState) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// L'indexation (extraction + découpage) est déjà terminée à ce stade : elle est
-	// réalisée de façon synchrone dans newDocument. Les documents sont donc publiés
-	// directement en statut "ready".
-	//
-	// Une simulation d'indexation asynchrone était auparavant faite via une goroutine
-	// temporisée. C'est un anti-pattern sur Cloud Run : hors annotation
-	// `run.googleapis.com/cpu-throttling: false`, le CPU est retiré à l'instance dès
-	// que la réponse HTTP est émise. La goroutine ne reprenait donc la main qu'à la
-	// requête suivante, et les documents restaient affichés « Indexation... »
-	// pendant un temps arbitrairement long.
 	totalChunks := 0
 	totalBytes := 0
 	s.mu.Lock()
@@ -473,6 +640,13 @@ func (s *ServerState) handleUpload(w http.ResponseWriter, r *http.Request) {
 		s.documents = append([]Document{addedDocs[i]}, s.documents...)
 	}
 	s.mu.Unlock()
+
+	// Synchronisation du snapshot d'index sur GCS
+	if s.gcsBucket != "" {
+		if err := s.saveCorpusSnapshot(r.Context()); err != nil {
+			log.Printf("⚠️  Avertissement : snapshot GCS non synchronisé : %v", err)
+		}
+	}
 
 	log.Printf("📥 %d document(s) reçu(s), %d chunk(s) indexé(s) dans le corpus (%d octets)", len(addedDocs), totalChunks, totalBytes)
 
@@ -1375,11 +1549,7 @@ func isStopWord(w string) bool {
 
 // Appel direct à l'API Vertex AI Gemini via REST & ADC
 func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, chunks []SearchChunk, modelName string, onToken func(string)) (int, int, error) {
-	token := os.Getenv("GOOGLE_OAUTH_ACCESS_TOKEN")
-	if token == "" {
-		// Tenter de lire le token depuis les métadonnées GCE si on est sur GCP
-		token = fetchMetadataToken()
-	}
+	token := getGCPToken()
 
 	if token == "" {
 		return 0, 0, fmt.Errorf("aucun jeton d'authentification GCP disponible")
@@ -1588,6 +1758,234 @@ func fetchMetadataToken() string {
 	tokenCache.expiresAt = time.Now().Add(ttl - 5*time.Minute)
 
 	return t.AccessToken
+}
+
+// getGCPToken résout le jeton d'accès GCP selon l'ordre : variable d'environnement,
+// serveur de métadonnées GCE/Cloud Run, puis binaire gcloud local.
+func getGCPToken() string {
+	if t := os.Getenv("GOOGLE_OAUTH_ACCESS_TOKEN"); t != "" {
+		return t
+	}
+	if t := fetchMetadataToken(); t != "" {
+		return t
+	}
+	// Fallback pour environnement de développement local si gcloud est disponible
+	if path, err := exec.LookPath("gcloud"); err == nil && path != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "gcloud", "auth", "print-access-token")
+		out, err := cmd.Output()
+		if err == nil {
+			tok := strings.TrimSpace(string(out))
+			if tok != "" {
+				return tok
+			}
+		}
+	}
+	return ""
+}
+
+func (s *ServerState) endpoint() string {
+	if s.gcsEndpoint != "" {
+		return s.gcsEndpoint
+	}
+	return "https://storage.googleapis.com"
+}
+
+// uploadToGCS téléverse des données brutes vers Cloud Storage via l'API REST JSON.
+func (s *ServerState) uploadToGCS(ctx context.Context, objectName, contentType string, data []byte) error {
+	if s.gcsBucket == "" {
+		return nil
+	}
+	var token string
+	if s.gcsEndpoint != "" {
+		token = "mock-test-token"
+	} else {
+		token = getGCPToken()
+		if token == "" {
+			return fmt.Errorf("jeton GCP manquant pour upload GCS")
+		}
+	}
+
+	apiURL := fmt.Sprintf("%s/upload/storage/v1/b/%s/o?uploadType=media&name=%s",
+		s.endpoint(), url.PathEscape(s.gcsBucket), url.QueryEscape(objectName))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", contentType)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("erreur HTTP GCS %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+// downloadFromGCS télécharge le contenu d'un objet Cloud Storage via l'API REST JSON.
+func (s *ServerState) downloadFromGCS(ctx context.Context, objectName string) ([]byte, error) {
+	if s.gcsBucket == "" {
+		return nil, fmt.Errorf("bucket GCS non configuré")
+	}
+	var token string
+	if s.gcsEndpoint != "" {
+		token = "mock-test-token"
+	} else {
+		token = getGCPToken()
+		if token == "" {
+			return nil, fmt.Errorf("jeton GCP manquant pour download GCS")
+		}
+	}
+
+	apiURL := fmt.Sprintf("%s/storage/v1/b/%s/o/%s?alt=media",
+		s.endpoint(), url.PathEscape(s.gcsBucket), url.PathEscape(objectName))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, os.ErrNotExist
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("erreur HTTP GCS %d: %s", resp.StatusCode, string(body))
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+// deleteFromGCS supprime un objet Cloud Storage via l'API REST JSON.
+func (s *ServerState) deleteFromGCS(ctx context.Context, objectName string) error {
+	if s.gcsBucket == "" {
+		return nil
+	}
+	var token string
+	if s.gcsEndpoint != "" {
+		token = "mock-test-token"
+	} else {
+		token = getGCPToken()
+		if token == "" {
+			return fmt.Errorf("jeton GCP manquant pour delete GCS")
+		}
+	}
+
+	apiURL := fmt.Sprintf("%s/storage/v1/b/%s/o/%s",
+		s.endpoint(), url.PathEscape(s.gcsBucket), url.PathEscape(objectName))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, apiURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("erreur HTTP GCS %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+// saveCorpusSnapshot sérialise l'index documentaire complet vers gs://{bucket}/index/corpus.json.
+func (s *ServerState) saveCorpusSnapshot(ctx context.Context) error {
+	if s.gcsBucket == "" {
+		return nil
+	}
+
+	s.mu.RLock()
+	stored := make([]StoredDocument, len(s.documents))
+	for i, doc := range s.documents {
+		stored[i] = doc.toStored()
+	}
+	s.mu.RUnlock()
+
+	snapshot := CorpusSnapshot{
+		Version:   1,
+		UpdatedAt: time.Now().UTC(),
+		Documents: stored,
+	}
+
+	data, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return fmt.Errorf("erreur sérialisation snapshot corpus: %w", err)
+	}
+
+	if err := s.uploadToGCS(ctx, corpusSnapshotPath, "application/json", data); err != nil {
+		log.Printf("⚠️  Échec sauvegarde snapshot GCS (%s): %v", corpusSnapshotPath, err)
+		return err
+	}
+	log.Printf("💾 Snapshot corpus sauvegardé avec succès sur gs://%s/%s (%d documents, %d octets)",
+		s.gcsBucket, corpusSnapshotPath, len(stored), len(data))
+	return nil
+}
+
+// initCorpusFromGCS charge l'index documentaire depuis Cloud Storage au démarrage.
+func (s *ServerState) initCorpusFromGCS(ctx context.Context) {
+	if s.gcsBucket == "" {
+		log.Println("ℹ️  GCS_RAG_BUCKET non configuré : fonctionnement en mémoire vive pure")
+		return
+	}
+
+	data, err := s.downloadFromGCS(ctx, corpusSnapshotPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			log.Printf("ℹ️  Aucun snapshot existant sur gs://%s/%s. Initialisation avec le corpus par défaut...",
+				s.gcsBucket, corpusSnapshotPath)
+			go func() {
+				bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				if err := s.saveCorpusSnapshot(bgCtx); err != nil {
+					log.Printf("⚠️  Échec synchronisation initiale du corpus vers GCS: %v", err)
+				}
+			}()
+			return
+		}
+		log.Printf("⚠️  Impossible de charger le snapshot GCS (%v). Conservation du corpus mémoire par défaut.", err)
+		return
+	}
+
+	var snapshot CorpusSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		log.Printf("⚠️  Erreur désérialisation snapshot GCS: %v. Conservation du corpus mémoire par défaut.", err)
+		return
+	}
+
+	docs := make([]Document, len(snapshot.Documents))
+	for i, sd := range snapshot.Documents {
+		docs[i] = storedToDocument(sd)
+	}
+
+	s.mu.Lock()
+	s.documents = docs
+	s.mu.Unlock()
+
+	log.Printf("✅ Corpus chargé depuis gs://%s/%s : %d document(s) restauré(s) (mis à jour le %s)",
+		s.gcsBucket, corpusSnapshotPath, len(docs), snapshot.UpdatedAt.Format(time.RFC3339))
 }
 
 // truncateText tronque un texte à maxLen caractères.

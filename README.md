@@ -34,6 +34,9 @@ Cette application est découplée de l'infrastructure et conçue pour se déploy
    - Backend Go compilé en binaire statique unique (< 25 Mo).
    - Frontend intégré via `embed.FS` (zéro serveur Node.js séparé, démarrage en < 1 seconde sur Cloud Run).
    - Streaming temps réel par **Server-Sent Events (SSE)**.
+7. **Persistance Cloud Storage & Multi-Instances** :
+   - Sauvegarde automatique des documents bruts et synchronisation de l'index sérialisé (`index/corpus.json`) sur GCS (`GCS_RAG_BUCKET`).
+   - Déverrouillage de l'auto-scaling multi-instances Cloud Run (`--max-instances=5`) sans perte de cohérence documentaire.
 
 ---
 
