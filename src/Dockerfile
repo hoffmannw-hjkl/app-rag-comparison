@@ -5,7 +5,7 @@
 # est donc un paramètre de sécurité, pas un simple détail de build. On suit la
 # ligne stable courante, qui embarque les correctifs net/http, crypto/tls et
 # crypto/x509 exigés par go.mod.
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 WORKDIR /app
 
