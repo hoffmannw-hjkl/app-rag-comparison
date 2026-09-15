@@ -31,7 +31,9 @@ spec:
             - name: GCP_REGION
               value: "europe-west1"
             - name: GEMINI_MODEL
-              value: "gemini-2.5-flash"
+              value: "gemini-3.5-flash"
+            - name: GCS_RAG_BUCKET
+              value: "${GCS_RAG_BUCKET}"
           resources:
             requests:
               cpu: "250m"
@@ -41,13 +43,13 @@ spec:
               memory: "512Mi"
           livenessProbe:
             httpGet:
-              path: /api/corpus
+              path: /healthz
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 15
           readinessProbe:
             httpGet:
-              path: /api/corpus
+              path: /healthz
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
