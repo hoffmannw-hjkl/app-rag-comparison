@@ -39,10 +39,11 @@ GKE_CLUSTER=$(terraform output -raw gke_cluster_name 2>/dev/null || echo "wh-djv
 GKE_REGION=$(terraform output -raw region 2>/dev/null || echo "europe-west1")
 GKE_KSA="rag-comparison-ksa"
 GKE_GSA=$(terraform output -raw gke_app_service_account_email 2>/dev/null || echo "")
+GCS_RAG_BUCKET=$(terraform output -raw rag_bucket_name 2>/dev/null || echo "${PROJECT_ID}-rag-docs")
 
 cd - >/dev/null
 
-echo "📦 Projet GCP : $PROJECT_ID | Cluster GKE : $GKE_CLUSTER ($GKE_REGION)"
+echo "📦 Projet GCP : $PROJECT_ID | Cluster GKE : $GKE_CLUSTER ($GKE_REGION) | Bucket RAG : $GCS_RAG_BUCKET"
 
 echo "🔨 Construction de l'image de production Go..."
 IMAGE_URI="${GKE_REGION}-docker.pkg.dev/${PROJECT_ID}/ai-demo-repo/rag-comparison:latest"
@@ -61,7 +62,7 @@ echo "🚀 Déploiement des manifests sur le cluster GKE Autopilot..."
 gcloud container clusters get-credentials "${GKE_CLUSTER}" --region "${GKE_REGION}" --project "${PROJECT_ID}"
 
 # Préparation du manifest avec variables injectées
-sed "s|\${GCP_PROJECT}|${PROJECT_ID}|g" deploy/k8s/deployment.yaml | kubectl apply -f -
+sed -e "s|\${GCP_PROJECT}|${PROJECT_ID}|g" -e "s|\${GCS_RAG_BUCKET}|${GCS_RAG_BUCKET}|g" deploy/k8s/deployment.yaml | kubectl apply -f -
 
 echo "⏳ Attente de disponibilité du service..."
 kubectl rollout status deployment/rag-comparison-demo -n default --timeout=120s
