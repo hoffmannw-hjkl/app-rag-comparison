@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"compress/zlib"
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -721,5 +723,309 @@ func TestHandleUploadReturnsTelemetry(t *testing.T) {
 	defer s.mu.RUnlock()
 	if len(s.documents) != 1 {
 		t.Errorf("document non ajouté au corpus, len = %d", len(s.documents))
+	}
+}
+
+func TestStoredDocumentSerializationAndRestoration(t *testing.T) {
+	orig := newDocument("doc-123",
+		"Architecture Haute Disponibilité GCP",
+		"gs://bucket/test.pdf",
+		"Le déploiement multi-régional garantit une résilience maximale contre les sinistres zonaux.",
+		time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC),
+	)
+
+	stored := orig.toStored()
+	if stored.ID != orig.ID {
+		t.Errorf("ID attendu %q, obtenu %q", orig.ID, stored.ID)
+	}
+	if stored.Title != orig.Title {
+		t.Errorf("Title attendu %q, obtenu %q", orig.Title, stored.Title)
+	}
+	if len(stored.Chunks) != len(orig.Chunks) {
+		t.Fatalf("nombre de chunks attendu %d, obtenu %d", len(orig.Chunks), len(stored.Chunks))
+	}
+
+	restored := storedToDocument(stored)
+	if restored.ID != orig.ID || restored.Title != orig.Title || restored.Source != orig.Source {
+		t.Errorf("champs de base non restaurés correctement: %+v", restored)
+	}
+	if restored.normTitle != orig.normTitle {
+		t.Errorf("normTitle non recalculé: %q != %q", restored.normTitle, orig.normTitle)
+	}
+	if len(restored.Chunks) != len(orig.Chunks) {
+		t.Fatalf("nombre de chunks restaurés différent: %d != %d", len(restored.Chunks), len(orig.Chunks))
+	}
+	for i := range restored.Chunks {
+		if restored.Chunks[i].norm != orig.Chunks[i].norm {
+			t.Errorf("chunk %d norm non recalculé: %q != %q", i, restored.Chunks[i].norm, orig.Chunks[i].norm)
+		}
+	}
+}
+
+func TestCorpusSnapshotJSONSerialization(t *testing.T) {
+	doc := newDocument("d1", "Test Snapshot", "gs://b/d1", "Texte du document de test pour snapshot.", time.Now())
+	snapshot := CorpusSnapshot{
+		Version:   1,
+		UpdatedAt: time.Now().UTC(),
+		Documents: []StoredDocument{doc.toStored()},
+	}
+
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("erreur encodage JSON snapshot: %v", err)
+	}
+
+	var decoded CorpusSnapshot
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("erreur décodage JSON snapshot: %v", err)
+	}
+
+	if decoded.Version != 1 || len(decoded.Documents) != 1 {
+		t.Fatalf("snapshot décodé invalide: %+v", decoded)
+	}
+	if decoded.Documents[0].ID != "d1" {
+		t.Errorf("document ID attendu 'd1', obtenu %q", decoded.Documents[0].ID)
+	}
+}
+
+func TestGCSOperationsWithMockServer(t *testing.T) {
+	storage := make(map[string][]byte)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			http.Error(w, "Non autorisé", http.StatusUnauthorized)
+			return
+		}
+
+		switch r.Method {
+		case http.MethodPost:
+			// Upload URL: /upload/storage/v1/b/{bucket}/o?uploadType=media&name={name}
+			name := r.URL.Query().Get("name")
+			if name == "" {
+				http.Error(w, "nom manquant", http.StatusBadRequest)
+				return
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			storage[name] = body
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]any{"name": name, "size": len(body)})
+
+		case http.MethodGet:
+			// Download URL: /storage/v1/b/{bucket}/o/{name}?alt=media
+			path := strings.TrimPrefix(r.URL.Path, "/storage/v1/b/test-bucket/o/")
+			data, ok := storage[path]
+			if !ok {
+				http.Error(w, "Not found", http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write(data)
+
+		case http.MethodDelete:
+			// Delete URL: /storage/v1/b/{bucket}/o/{name}
+			path := strings.TrimPrefix(r.URL.Path, "/storage/v1/b/test-bucket/o/")
+			delete(storage, path)
+			w.WriteHeader(http.StatusNoContent)
+
+		default:
+			http.Error(w, "Méthode non supportée", http.StatusMethodNotAllowed)
+		}
+	}))
+	defer ts.Close()
+
+	s := &ServerState{
+		gcsBucket:   "test-bucket",
+		gcsEndpoint: ts.URL,
+	}
+
+	ctx := context.Background()
+
+	// 1. Test Upload
+	testData := []byte("contenu secret gcs test")
+	if err := s.uploadToGCS(ctx, "test/doc.txt", "text/plain", testData); err != nil {
+		t.Fatalf("uploadToGCS a échoué: %v", err)
+	}
+
+	// 2. Test Download
+	downloaded, err := s.downloadFromGCS(ctx, "test/doc.txt")
+	if err != nil {
+		t.Fatalf("downloadFromGCS a échoué: %v", err)
+	}
+	if !bytes.Equal(downloaded, testData) {
+		t.Errorf("données téléchargées différentes: %q != %q", string(downloaded), string(testData))
+	}
+
+	// 3. Test Delete
+	if err := s.deleteFromGCS(ctx, "test/doc.txt"); err != nil {
+		t.Fatalf("deleteFromGCS a échoué: %v", err)
+	}
+
+	// 4. Test Download après Delete doit renvoyer os.ErrNotExist
+	_, err = s.downloadFromGCS(ctx, "test/doc.txt")
+	if err == nil {
+		t.Fatalf("attendu erreur os.ErrNotExist après suppression, obtenu nil")
+	}
+}
+
+func TestSaveAndInitCorpusSnapshotWithMockServer(t *testing.T) {
+	storage := make(map[string][]byte)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			name := r.URL.Query().Get("name")
+			body, _ := io.ReadAll(r.Body)
+			storage[name] = body
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]any{"name": name})
+		case http.MethodGet:
+			path := strings.TrimPrefix(r.URL.Path, "/storage/v1/b/mock-bucket/o/")
+			data, ok := storage[path]
+			if !ok {
+				http.Error(w, "Not found", http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write(data)
+		}
+	}))
+	defer ts.Close()
+
+	// 1. Sauvegarder un corpus
+	s1 := &ServerState{
+		gcsBucket:   "mock-bucket",
+		gcsEndpoint: ts.URL,
+		documents: []Document{
+			newDocument("d1", "Titre SRE Cloud", "gs://mock/sre", "Pratiques SRE avancées sur Kubernetes et GKE.", time.Now()),
+			newDocument("d2", "Titre FinOps GCP", "gs://mock/finops", "Gestion des budgets et alertes de facturation.", time.Now()),
+		},
+	}
+
+	ctx := context.Background()
+	if err := s1.saveCorpusSnapshot(ctx); err != nil {
+		t.Fatalf("saveCorpusSnapshot a échoué: %v", err)
+	}
+
+	// 2. Démarrer une nouvelle instance (s2) et restaurer le corpus depuis GCS
+	s2 := &ServerState{
+		gcsBucket:   "mock-bucket",
+		gcsEndpoint: ts.URL,
+	}
+	s2.initCorpusFromGCS(ctx)
+
+	s2.mu.RLock()
+	docsCount := len(s2.documents)
+	s2.mu.RUnlock()
+
+	if docsCount != 2 {
+		t.Fatalf("attendu 2 documents restaurés sur la nouvelle instance, obtenu %d", docsCount)
+	}
+
+	// 3. Vérifier que la recherche fonctionne parfaitement sur la nouvelle instance
+	results := s2.searchDocuments("FinOps")
+	if len(results) == 0 {
+		t.Fatalf("aucun résultat de recherche sur l'instance restaurée pour 'FinOps'")
+	}
+	if results[0].DocumentTitle != "Titre FinOps GCP" {
+		t.Errorf("résultat inattendu: %q", results[0].DocumentTitle)
+	}
+}
+
+func TestInitCorpusFromGCSFallbackWhenNotFound(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Not found", http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	defaultDoc := newDocument("def-1", "Doc Defaut", "gs://b/def", "Contenu par défaut en mémoire.", time.Now())
+	s := &ServerState{
+		gcsBucket:   "empty-bucket",
+		gcsEndpoint: ts.URL,
+		documents:   []Document{defaultDoc},
+	}
+
+	ctx := context.Background()
+	s.initCorpusFromGCS(ctx)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.documents) != 1 || s.documents[0].ID != "def-1" {
+		t.Fatalf("le corpus par défaut doit être préservé en cas de 404 sur GCS")
+	}
+}
+
+func TestHandleDocumentsDeleteSyncsGCS(t *testing.T) {
+	storage := make(map[string][]byte)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			name := r.URL.Query().Get("name")
+			body, _ := io.ReadAll(r.Body)
+			storage[name] = body
+			w.WriteHeader(http.StatusOK)
+		case http.MethodGet:
+			path := strings.TrimPrefix(r.URL.Path, "/storage/v1/b/sync-bucket/o/")
+			data, ok := storage[path]
+			if !ok {
+				http.Error(w, "Not found", http.StatusNotFound)
+				return
+			}
+			w.Write(data)
+		}
+	}))
+	defer ts.Close()
+
+	s := &ServerState{
+		gcsBucket:   "sync-bucket",
+		gcsEndpoint: ts.URL,
+		documents: []Document{
+			newDocument("doc-a", "Doc A", "gs://b/a", "Contenu doc A", time.Now()),
+			newDocument("doc-b", "Doc B", "gs://b/b", "Contenu doc B", time.Now()),
+		},
+	}
+
+	// Suppression unitaire
+	req := httptest.NewRequest(http.MethodDelete, "/api/documents?id=doc-a", nil)
+	w := httptest.NewRecorder()
+	s.handleDocuments(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, attendu %d", w.Code, http.StatusOK)
+	}
+
+	// Vérifier que le snapshot GCS contient maintenant 1 seul document
+	snapshotData, ok := storage[corpusSnapshotPath]
+	if !ok {
+		t.Fatalf("snapshot GCS absent après suppression")
+	}
+	var snap CorpusSnapshot
+	if err := json.Unmarshal(snapshotData, &snap); err != nil {
+		t.Fatalf("snapshot JSON invalide: %v", err)
+	}
+	if len(snap.Documents) != 1 || snap.Documents[0].ID != "doc-b" {
+		t.Errorf("snapshot GCS mal synchronisé: %+v", snap.Documents)
+	}
+
+	// Suppression totale
+	reqAll := httptest.NewRequest(http.MethodDelete, "/api/documents?all=true", nil)
+	wAll := httptest.NewRecorder()
+	s.handleDocuments(wAll, reqAll)
+
+	if wAll.Code != http.StatusOK {
+		t.Fatalf("code = %d, attendu %d", wAll.Code, http.StatusOK)
+	}
+
+	snapshotDataAll := storage[corpusSnapshotPath]
+	var snapAll CorpusSnapshot
+	json.Unmarshal(snapshotDataAll, &snapAll)
+	if len(snapAll.Documents) != 0 {
+		t.Errorf("snapshot GCS attendu vide après purge, obtenu %d documents", len(snapAll.Documents))
 	}
 }
