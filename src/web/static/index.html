@@ -381,7 +381,7 @@
                   <span class="text-[10px] px-2 py-0.5 rounded-full ${d.status === 'ready' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse'}">
                     ${d.status === 'ready' ? 'Indexé' : 'Indexation...'}
                   </span>
-                  <button onclick="confirmDeleteDocument(event, '${esc(d.id)}', '${esc(d.title)}')" title="Supprimer ce document" class="text-slate-500 hover:text-red-400 p-1 text-xs rounded hover:bg-red-500/10 transition-colors ml-0.5">
+                  <button data-id="${esc(d.id)}" data-title="${esc(d.title)}" onclick="confirmDeleteDocument(event, this)" title="Supprimer ce document" class="text-slate-500 hover:text-red-400 p-1 text-xs rounded hover:bg-red-500/10 transition-colors ml-0.5">
                     <i class="fa-solid fa-trash-can"></i>
                   </button>
                 </div>
@@ -402,8 +402,10 @@
       }
     }
 
-    async function confirmDeleteDocument(e, id, title) {
+    async function confirmDeleteDocument(e, btn) {
       if (e) e.stopPropagation();
+      const id = btn.dataset.id;
+      const title = btn.dataset.title;
       if (!confirm(`Supprimer définitivement "${title}" du corpus documentaire ?`)) {
         return;
       }
@@ -441,9 +443,14 @@
       }
     }
 
+    let sidebarToastTimer = null;
     function showSidebarToast(message, type = 'success') {
       const toast = document.getElementById('sidebar-toast');
       if (!toast) return;
+
+      if (sidebarToastTimer) {
+        clearTimeout(sidebarToastTimer);
+      }
 
       const styles = {
         success: 'bg-emerald-950/80 border-emerald-500/30 text-emerald-300',
@@ -456,7 +463,7 @@
       toast.innerHTML = `<i class="fa-solid fa-circle-info flex-shrink-0"></i> <span class="truncate flex-1">${esc(message)}</span>`;
       toast.classList.remove('hidden');
 
-      setTimeout(() => {
+      sidebarToastTimer = setTimeout(() => {
         toast.classList.add('hidden');
       }, 5000);
     }
@@ -614,12 +621,12 @@
             xhr.send(formData);
           });
 
-          closeUploadModal();
-          resetUploadForm();
-          loadDocuments();
           const count = respData.count || selectedFiles.length;
           const chunks = respData.total_chunks ? `${respData.total_chunks} chunks, ` : '';
           const size = respData.total_bytes ? `${(respData.total_bytes / 1024).toFixed(1)} Ko` : '';
+          closeUploadModal();
+          resetUploadForm();
+          loadDocuments();
           showSidebarToast(`✅ ${count} document(s) indexé(s) (${chunks}${size})`, 'success');
 
         } else {
