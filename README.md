@@ -37,6 +37,10 @@ Cette application est découplée de l'infrastructure et conçue pour se déploy
 
 ---
 
+## 📐 Architecture & Schéma GCP Draw
+
+> 📐 **Schéma interactif GCP Draw** : Le schéma officiel au format GCP Draw (`go/gcpdraw`) est disponible dans [docs/architecture-gcpdraw.md](docs/architecture-gcpdraw.md).
+
 ## 🏗️ Structure du Dépôt
 
 ```
