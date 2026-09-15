@@ -86,6 +86,10 @@
         <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
         <span>Vertex AI Connecté</span>
       </span>
+      <span class="text-cyan-400 border border-cyan-500/20 bg-cyan-950/40 px-2.5 py-1 rounded-full flex items-center space-x-1.5">
+        <i class="fa-solid fa-layer-group text-[10px] text-cyan-400"></i>
+        <span>Recherche Hybride : Embeddings 002 + BM25</span>
+      </span>
       <span class="text-slate-400 border border-slate-800 bg-slate-950 px-2.5 py-1 rounded-full">
         <i class="fa-solid fa-shield-halved text-blue-400 mr-1"></i> Cloud Armor WAF Actif
       </span>
@@ -126,7 +130,7 @@
       </div>
 
       <div class="pt-4 border-t border-slate-800/80 text-[11px] text-slate-500 flex items-center justify-between">
-        <span>Bucket : <code class="text-slate-400">gs://...-rag-docs</code></span>
+        <span id="bucket-info">Bucket : <code id="bucket-code" class="text-slate-400 font-mono text-[10px]" title="Bucket Cloud Storage synchronisé">gs://...-rag-docs</code></span>
         <i class="fa-solid fa-lock text-emerald-500" title="UBLA & Versioning activés"></i>
       </div>
     </aside>
@@ -322,6 +326,14 @@
             selectorB.value = "gemini-3.8-flash";
           } else if (data.models.length > 1) {
             selectorB.value = data.models[1].id;
+          }
+        }
+
+        if (data.gcs_bucket) {
+          const bucketEl = document.getElementById('bucket-code');
+          if (bucketEl) {
+            bucketEl.innerText = 'gs://' + data.gcs_bucket;
+            bucketEl.title = 'gs://' + data.gcs_bucket + ' (persistance active)';
           }
         }
       } catch (err) {
@@ -815,14 +827,29 @@
 
       es.addEventListener('retrieval', (e) => {
         try {
-          const chunks = JSON.parse(e.data);
+          const raw = JSON.parse(e.data);
+          const chunks = Array.isArray(raw) ? raw : (raw.chunks || []);
           if (groundEl && Array.isArray(chunks) && chunks.length > 0) {
             groundEl.classList.remove('hidden');
-            const uniqueTitles = [...new Set(chunks.map(ch => ch.document_title))];
+            const hasHybrid = chunks.some(ch => ch.search_type === 'hybrid');
+            const modeLabel = hasHybrid ? 'Hybride 🔮' : 'Lexicale 🔍';
             groundEl.innerHTML = `
-              <div class="flex items-center gap-1 flex-wrap text-[10px] text-slate-400 mb-1">
-                <span class="text-cyan-400 font-semibold"><i class="fa-solid fa-file-circle-check text-[9px]"></i> Grounding (${chunks.length} passages) :</span>
-                ${uniqueTitles.map(t => `<span class="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 truncate max-w-[140px]" title="${esc(t)}">${esc(t)}</span>`).join('')}
+              <div class="flex items-center gap-1.5 flex-wrap text-[10px] text-slate-400 mb-1">
+                <span class="text-cyan-400 font-semibold flex items-center gap-1">
+                  <i class="fa-solid fa-file-circle-check text-[9px]"></i> Grounding (${chunks.length} passages, ${modeLabel}) :
+                </span>
+                ${chunks.map(ch => {
+                  const scorePct = Math.round((ch.score || 0) * 100);
+                  const tip = ch.search_type === 'hybrid'
+                    ? `Score Hybride : ${scorePct}%\n• Sémantique : ${Math.round((ch.semantic_score || 0) * 100)}%\n• Lexical BM25 : ${Math.round((ch.lexical_score || 0) * 100)}%`
+                    : `Score Lexical : ${scorePct}%`;
+                  const scoreBadgeClass = scorePct >= 70 ? 'text-emerald-400' : 'text-cyan-400';
+                  return `<span class="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 truncate max-w-[190px] flex items-center gap-1 cursor-help hover:border-cyan-500/40 transition-colors" title="${esc(tip)}">
+                    <span class="truncate">${esc(ch.document_title)}</span>
+                    <span class="text-[9px] font-mono font-semibold ${scoreBadgeClass}">${scorePct}%</span>
+                  </span>`;
+                }).join('')}
+                <span id="retrieval-time-${textId}" class="text-[9px] text-slate-500 font-mono ml-auto"></span>
               </div>
             `;
             c.scrollTop = c.scrollHeight;
@@ -851,8 +878,13 @@
           if (ttftEl) ttftEl.innerText = `${m.first_token_ms}ms`;
           if (durEl) durEl.innerText = `${m.total_duration_ms}ms`;
           if (tokEl) tokEl.innerText = `${m.total_tokens}`;
+          const retTimeEl = document.getElementById(`retrieval-time-${textId}`);
+          if (retTimeEl && m.retrieval_ms !== undefined) {
+            retTimeEl.innerText = `(${m.retrieval_ms}ms)`;
+          }
           if (telemetryEl) {
-            telemetryEl.innerHTML = `⚡ 1er token: ${m.first_token_ms}ms | Total: ${m.total_duration_ms}ms | ${m.total_tokens} tokens`;
+            const retInfo = m.retrieval_ms !== undefined ? ` | 🔍 Retrieval (${m.search_type || 'hybrid'}): ${m.retrieval_ms}ms` : '';
+            telemetryEl.innerHTML = `⚡ 1er token: ${m.first_token_ms}ms | Total: ${m.total_duration_ms}ms | ${m.total_tokens} tokens${retInfo}`;
           }
         } catch (err) {}
       });
