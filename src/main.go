@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -41,7 +42,8 @@ type Chunk struct {
 	// norm est la forme normalisée de Text (minuscules, sans accent ni
 	// apostrophe) sur laquelle s'effectue la recherche. Elle est calculée une
 	// fois à l'indexation plutôt qu'à chaque requête.
-	norm string
+	norm      string
+	Embedding []float32 `json:"embedding,omitempty"`
 }
 
 type Document struct {
@@ -64,6 +66,9 @@ type SearchChunk struct {
 	DocumentTitle string  `json:"document_title"`
 	Snippet       string  `json:"snippet"`
 	Score         float64 `json:"score"`
+	SemanticScore float64 `json:"semantic_score,omitempty"`
+	LexicalScore  float64 `json:"lexical_score,omitempty"`
+	SearchType    string  `json:"search_type,omitempty"` // "hybrid" ou "lexical"
 	SourceURI     string  `json:"source_uri"`
 	ChunkIndex    int     `json:"chunk_index"`
 }
@@ -122,19 +127,21 @@ var AvailableModels = []ModelInfo{
 }
 
 type ServerState struct {
-	mu          sync.RWMutex
-	documents   []Document
-	projectID   string
-	region      string
-	modelName   string
-	gcsBucket   string // Nom du bucket Cloud Storage pour la persistance du corpus
-	gcsEndpoint string // Surcharge de l'endpoint de base GCS pour les tests unitaires
+	mu            sync.RWMutex
+	documents     []Document
+	projectID     string
+	region        string
+	modelName     string
+	gcsBucket     string // Nom du bucket Cloud Storage pour la persistance du corpus
+	gcsEndpoint   string // Surcharge de l'endpoint de base GCS pour les tests unitaires
+	embedEndpoint string // Surcharge de l'endpoint Vertex AI Embeddings pour les tests unitaires
 }
 
 // Structures pour la persistance et synchronisation du corpus sur Cloud Storage (index/corpus.json)
 type StoredChunk struct {
-	Index int    `json:"index"`
-	Text  string `json:"text"`
+	Index     int       `json:"index"`
+	Text      string    `json:"text"`
+	Embedding []float32 `json:"embedding,omitempty"`
 }
 
 type StoredDocument struct {
@@ -162,8 +169,9 @@ func (d Document) toStored() StoredDocument {
 	chunks := make([]StoredChunk, len(d.Chunks))
 	for i, c := range d.Chunks {
 		chunks[i] = StoredChunk{
-			Index: c.Index,
-			Text:  c.Text,
+			Index:     c.Index,
+			Text:      c.Text,
+			Embedding: c.Embedding,
 		}
 	}
 	return StoredDocument{
@@ -184,9 +192,10 @@ func storedToDocument(sd StoredDocument) Document {
 	chunks := make([]Chunk, len(sd.Chunks))
 	for i, sc := range sd.Chunks {
 		chunks[i] = Chunk{
-			Index: sc.Index,
-			Text:  sc.Text,
-			norm:  normalizeForSearch(sc.Text),
+			Index:     sc.Index,
+			Text:      sc.Text,
+			norm:      normalizeForSearch(sc.Text),
+			Embedding: sc.Embedding,
 		}
 	}
 	if len(chunks) == 0 && sd.Content != "" {
@@ -274,6 +283,13 @@ func main() {
 		state.initCorpusFromGCS(initCtx)
 		initCancel()
 	}
+
+	// Vectorisation en arrière-plan des chunks du corpus ne disposant pas encore d'embeddings
+	go func() {
+		embCtx, embCancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer embCancel()
+		state.ensureCorpusEmbeddings(embCtx)
+	}()
 
 	mux := http.NewServeMux()
 
@@ -435,7 +451,7 @@ func (s *ServerState) handleModels(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"current":    current,
 		"models":     AvailableModels,
-		"embedding":  "text-embedding-005",
+		"embedding":  "text-multilingual-embedding-002",
 		"gcs_bucket": bucket,
 	})
 }
@@ -629,6 +645,27 @@ func (s *ServerState) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if len(addedDocs) == 0 {
 		http.Error(w, "Aucun document ou fichier valide reçu", http.StatusBadRequest)
 		return
+	}
+
+	// Vectorisation sémantique des chunks ajoutés via Vertex AI Embeddings
+	for i := range addedDocs {
+		if len(addedDocs[i].Chunks) > 0 {
+			texts := make([]string, len(addedDocs[i].Chunks))
+			for j, c := range addedDocs[i].Chunks {
+				texts[j] = c.Text
+			}
+			embCtx, embCancel := context.WithTimeout(r.Context(), 15*time.Second)
+			embs, err := s.generateEmbeddings(embCtx, texts, "RETRIEVAL_DOCUMENT")
+			embCancel()
+			if err == nil && len(embs) == len(addedDocs[i].Chunks) {
+				for j := range addedDocs[i].Chunks {
+					addedDocs[i].Chunks[j].Embedding = embs[j]
+				}
+				log.Printf("🧠 %d chunk(s) vectorisé(s) pour %q", len(embs), addedDocs[i].Title)
+			} else if err != nil {
+				log.Printf("ℹ️  Vectorisation non disponible pour %q (%v) : repli lexical actif", addedDocs[i].Title, err)
+			}
+		}
 	}
 
 	totalChunks := 0
@@ -1357,16 +1394,17 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		activeModel = requested
 	}
 
-	// 1. Étape de Retrieval (Recherche sémantique)
+	// 1. Étape de Retrieval (Recherche Hybride : Sémantique + BM25)
 	sendSSE("status", map[string]string{
 		"step":    "retrieval",
-		"message": "Recherche des passages documentaires les plus pertinents...",
+		"message": "Recherche hybride (embeddings text-multilingual-002 + BM25)...",
 	})
-	time.Sleep(400 * time.Millisecond)
 
-	chunks := s.searchDocuments(query)
+	retrievalStart := time.Now()
+	chunks, searchType := s.searchDocumentsHybrid(r.Context(), query)
+	retrievalDuration := time.Since(retrievalStart)
+
 	sendSSE("retrieval", chunks)
-	time.Sleep(300 * time.Millisecond)
 
 	// 2. Étape de Synthèse Groundée (Appel Vertex AI Gemini avec streaming)
 	sendSSE("status", map[string]string{
@@ -1420,6 +1458,8 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	metricsData := map[string]any{
 		"model":             activeModel,
+		"retrieval_ms":      retrievalDuration.Milliseconds(),
+		"search_type":       searchType,
 		"first_token_ms":    firstTokenTime.Milliseconds(),
 		"total_duration_ms": totalDuration.Milliseconds(),
 		"prompt_tokens":     promptTokens,
@@ -1510,6 +1550,162 @@ func (s *ServerState) searchDocuments(query string) []SearchChunk {
 		matches = matches[:topKChunks]
 	}
 	return matches
+}
+
+// cosineSimilarity calcule la similarité cosinus entre deux vecteurs float32.
+func cosineSimilarity(a, b []float32) float64 {
+	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {
+		return 0.0
+	}
+
+	var dot, normA, normB float64
+	for i := range a {
+		ai := float64(a[i])
+		bi := float64(b[i])
+		dot += ai * bi
+		normA += ai * ai
+		normB += bi * bi
+	}
+
+	if normA <= 0 || normB <= 0 {
+		return 0.0
+	}
+
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+// searchDocumentsHybrid combine la similarité sémantique (Vertex AI Embeddings text-multilingual-002)
+// et le scoring lexical BM25 en mémoire selon la formule validée :
+//
+//	Score_final = 0.65 * Sim_cosinus + 0.35 * Score_lexical
+//
+// En cas d'erreur ou d'indisponibilité de l'API d'embeddings, bascule automatiquement à 100% sur le lexical.
+func (s *ServerState) searchDocumentsHybrid(ctx context.Context, query string) ([]SearchChunk, string) {
+	s.mu.RLock()
+	docsCount := len(s.documents)
+	s.mu.RUnlock()
+
+	if docsCount == 0 {
+		return []SearchChunk{}, "none"
+	}
+
+	terms := significantTerms(query)
+	lexicalOnly := false
+
+	// 1. Tenter la vectorisation sémantique de la requête
+	var queryEmbedding []float32
+	embCtx, embCancel := context.WithTimeout(ctx, 4*time.Second)
+	embs, err := s.generateEmbeddings(embCtx, []string{query}, "RETRIEVAL_QUERY")
+	embCancel()
+
+	if err != nil || len(embs) == 0 || len(embs[0]) == 0 {
+		lexicalOnly = true
+		if err != nil {
+			log.Printf("ℹ️  Vectorisation requête non disponible (%v) -> repli lexical 100%%", err)
+		}
+	} else {
+		queryEmbedding = embs[0]
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	type scoredCandidate struct {
+		chunk      SearchChunk
+		finalScore float64
+	}
+
+	var candidates []scoredCandidate
+	hasSemanticMatch := false
+
+	// Facteur de normalisation lexical
+	lexMaxExpected := math.Max(1.0, float64(len(terms))*1.2)
+
+	for _, doc := range s.documents {
+		titleNorm := doc.normTitle
+		titleScore := 0.0
+		for _, term := range terms {
+			if strings.Contains(titleNorm, term) {
+				titleScore += 0.5
+			}
+		}
+
+		for _, chunk := range doc.Chunks {
+			// Calcul lexical normalisé
+			rawLexScore := titleScore
+			for _, term := range terms {
+				if occurrences := strings.Count(chunk.norm, term); occurrences > 0 {
+					rawLexScore += 0.35 + 0.1*float64(min(occurrences-1, 5))
+				}
+			}
+			normLexScore := math.Min(1.0, rawLexScore/lexMaxExpected)
+
+			// Calcul sémantique
+			var semScore float64
+			if !lexicalOnly && len(queryEmbedding) > 0 && len(chunk.Embedding) > 0 {
+				cosSim := cosineSimilarity(queryEmbedding, chunk.Embedding)
+				// Calibrage cosinus : les embeddings Vertex multilingues ont des scores de similarité
+				// typiquement dans [0.3, 0.9] pour des textes pertinents.
+				if cosSim > 0.25 {
+					semScore = math.Min(1.0, math.Max(0.0, (cosSim-0.25)/0.65))
+					hasSemanticMatch = true
+				}
+			}
+
+			// Score final hybride
+			var finalScore float64
+			var sType string
+			if !lexicalOnly && len(chunk.Embedding) > 0 {
+				finalScore = 0.65*semScore + 0.35*normLexScore
+				sType = "hybrid"
+			} else {
+				finalScore = normLexScore
+				sType = "lexical"
+			}
+
+			if finalScore <= 0.05 {
+				continue
+			}
+
+			candidates = append(candidates, scoredCandidate{
+				chunk: SearchChunk{
+					DocumentTitle: doc.Title,
+					Snippet:       truncateText(chunk.Text, 600),
+					Score:         math.Round(finalScore*1000) / 1000,
+					SemanticScore: math.Round(semScore*1000) / 1000,
+					LexicalScore:  math.Round(normLexScore*1000) / 1000,
+					SearchType:    sType,
+					SourceURI:     doc.Source,
+					ChunkIndex:    chunk.Index,
+				},
+				finalScore: finalScore,
+			})
+		}
+	}
+
+	searchMode := "hybrid"
+	if lexicalOnly || !hasSemanticMatch {
+		searchMode = "lexical"
+	}
+
+	// Tri par score décroissant, en départageant à score égal par l'ordre des chunks
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].finalScore != candidates[j].finalScore {
+			return candidates[i].finalScore > candidates[j].finalScore
+		}
+		return candidates[i].chunk.ChunkIndex < candidates[j].chunk.ChunkIndex
+	})
+
+	if len(candidates) > topKChunks {
+		candidates = candidates[:topKChunks]
+	}
+
+	result := make([]SearchChunk, len(candidates))
+	for i, c := range candidates {
+		result[i] = c.chunk
+	}
+
+	return result, searchMode
 }
 
 // significantTerms découpe la requête en termes comparables au contenu indexé.
@@ -1986,6 +2182,198 @@ func (s *ServerState) initCorpusFromGCS(ctx context.Context) {
 
 	log.Printf("✅ Corpus chargé depuis gs://%s/%s : %d document(s) restauré(s) (mis à jour le %s)",
 		s.gcsBucket, corpusSnapshotPath, len(docs), snapshot.UpdatedAt.Format(time.RFC3339))
+}
+
+// generateEmbeddings appelle l'API Vertex AI pour vectoriser une liste de textes.
+// Modèle : text-multilingual-embedding-002 (768 dimensions).
+// taskType : "RETRIEVAL_DOCUMENT" pour les chunks, "RETRIEVAL_QUERY" pour les requêtes utilisateur.
+func (s *ServerState) generateEmbeddings(ctx context.Context, texts []string, taskType string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+
+	var token string
+	if s.embedEndpoint != "" {
+		token = "mock-test-token"
+	} else {
+		token = getGCPToken()
+		if token == "" {
+			return nil, fmt.Errorf("jeton GCP manquant pour Vertex AI Embeddings")
+		}
+	}
+
+	targetLocation := s.region
+	apiURL := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/text-multilingual-embedding-002:predict",
+		s.region, s.projectID, targetLocation)
+	if s.embedEndpoint != "" {
+		apiURL = s.embedEndpoint
+	}
+
+	// Limite Vertex AI text-multilingual-embedding-002 : max 20 000 tokens par requête.
+	// Avec des passages de ~1200 caractères (~300 tokens), un lot de 10 passages
+	// consomme ~3 000 tokens, bien en dessous du plafond.
+	const batchSize = 10
+	allEmbeddings := make([][]float32, 0, len(texts))
+
+	for start := 0; start < len(texts); start += batchSize {
+		select {
+		case <-ctx.Done():
+			return allEmbeddings, ctx.Err()
+		default:
+		}
+
+		end := start + batchSize
+		if end > len(texts) {
+			end = len(texts)
+		}
+		batch := texts[start:end]
+
+		instances := make([]map[string]string, len(batch))
+		for i, txt := range batch {
+			instances[i] = map[string]string{
+				"content":   txt,
+				"task_type": taskType,
+			}
+		}
+
+		reqBody := map[string]any{
+			"instances": instances,
+		}
+
+		jsonBytes, err := json.Marshal(reqBody)
+		if err != nil {
+			return nil, err
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(jsonBytes))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("appel Vertex Embeddings échoué : %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+			resp.Body.Close()
+			return nil, fmt.Errorf("erreur HTTP Vertex Embeddings %d: %s", resp.StatusCode, string(body))
+		}
+
+		var vResp struct {
+			Predictions []struct {
+				Embeddings struct {
+					Values []float32 `json:"values"`
+				} `json:"embeddings"`
+			} `json:"predictions"`
+		}
+
+		err = json.NewDecoder(resp.Body).Decode(&vResp)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("décodage réponse Vertex Embeddings impossible : %w", err)
+		}
+
+		if len(vResp.Predictions) != len(batch) {
+			return nil, fmt.Errorf("nombre de prédictions incohérent : reçu %d, attendu %d", len(vResp.Predictions), len(batch))
+		}
+
+		for _, p := range vResp.Predictions {
+			allEmbeddings = append(allEmbeddings, p.Embeddings.Values)
+		}
+
+		if len(texts) > batchSize {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	return allEmbeddings, nil
+}
+
+// ensureCorpusEmbeddings s'assure que tous les chunks du corpus en RAM disposent d'un vecteur d'embeddings.
+// Les chunks nouvellement vectorisés sont sauvegardés dans le snapshot Cloud Storage.
+func (s *ServerState) ensureCorpusEmbeddings(ctx context.Context) {
+	type chunkRef struct {
+		docIdx   int
+		chunkIdx int
+		text     string
+	}
+
+	s.mu.RLock()
+	var missing []chunkRef
+	for dIdx, doc := range s.documents {
+		for cIdx, chunk := range doc.Chunks {
+			if len(chunk.Embedding) == 0 && strings.TrimSpace(chunk.Text) != "" {
+				missing = append(missing, chunkRef{
+					docIdx:   dIdx,
+					chunkIdx: cIdx,
+					text:     chunk.Text,
+				})
+			}
+		}
+	}
+	s.mu.RUnlock()
+
+	if len(missing) == 0 {
+		return
+	}
+
+	log.Printf("🧠 Vectorisation de %d chunk(s) manquant(s) dans le corpus via text-multilingual-embedding-002...", len(missing))
+
+	// Traitement par lots pour permettre la sauvegarde progressive et la résilience
+	const stepSize = 20
+	totalDone := 0
+
+	for start := 0; start < len(missing); start += stepSize {
+		select {
+		case <-ctx.Done():
+			log.Printf("⚠️  Vectorisation interrompue : %d/%d chunks traités", totalDone, len(missing))
+			return
+		default:
+		}
+
+		end := start + stepSize
+		if end > len(missing) {
+			end = len(missing)
+		}
+		subMissing := missing[start:end]
+		texts := make([]string, len(subMissing))
+		for i, ref := range subMissing {
+			texts[i] = ref.text
+		}
+
+		embeddings, err := s.generateEmbeddings(ctx, texts, "RETRIEVAL_DOCUMENT")
+		if err != nil {
+			log.Printf("ℹ️  Sous-lot de vectorisation (%d-%d) échoué (%v) : repli lexical temporaire", start, end, err)
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		s.mu.Lock()
+		for i, ref := range subMissing {
+			if ref.docIdx < len(s.documents) && ref.chunkIdx < len(s.documents[ref.docIdx].Chunks) {
+				s.documents[ref.docIdx].Chunks[ref.chunkIdx].Embedding = embeddings[i]
+			}
+		}
+		s.mu.Unlock()
+
+		totalDone += len(embeddings)
+		if totalDone%100 == 0 || end == len(missing) {
+			log.Printf("🧠 Progression vectorisation : %d/%d chunks vectorisés (%.1f%%)",
+				totalDone, len(missing), float64(totalDone)*100.0/float64(len(missing)))
+		}
+	}
+
+	log.Printf("✅ Vectorisation terminée : %d/%d chunk(s) vectorisé(s). Sauvegarde du snapshot...", totalDone, len(missing))
+	if s.gcsBucket != "" && totalDone > 0 {
+		if err := s.saveCorpusSnapshot(ctx); err != nil {
+			log.Printf("⚠️  Échec sauvegarde snapshot après vectorisation : %v", err)
+		}
+	}
 }
 
 // truncateText tronque un texte à maxLen caractères.

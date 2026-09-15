@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -1029,3 +1030,208 @@ func TestHandleDocumentsDeleteSyncsGCS(t *testing.T) {
 		t.Errorf("snapshot GCS attendu vide après purge, obtenu %d documents", len(snapAll.Documents))
 	}
 }
+
+func TestCosineSimilarity(t *testing.T) {
+	tests := []struct {
+		name string
+		a    []float32
+		b    []float32
+		want float64
+	}{
+		{"vecteurs identiques", []float32{1, 0, 0}, []float32{1, 0, 0}, 1.0},
+		{"vecteurs orthogonaux", []float32{1, 0}, []float32{0, 1}, 0.0},
+		{"vecteurs opposés", []float32{1, 0}, []float32{-1, 0}, -1.0},
+		{"dimensions différentes", []float32{1, 2}, []float32{1, 2, 3}, 0.0},
+		{"vecteur nul", []float32{0, 0}, []float32{1, 1}, 0.0},
+		{"vecteurs vides", []float32{}, []float32{}, 0.0},
+		{"vecteurs colinéaires scalaires", []float32{1, 2, 3}, []float32{2, 4, 6}, 1.0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cosineSimilarity(tc.a, tc.b)
+			if math.Abs(got-tc.want) > 1e-4 {
+				t.Errorf("cosineSimilarity(%v, %v) = %f, attendu %f", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGenerateEmbeddingsWithMockServer(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Instances []struct {
+				Content  string `json:"content"`
+				TaskType string `json:"task_type"`
+			} `json:"instances"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		type Pred struct {
+			Embeddings struct {
+				Values []float32 `json:"values"`
+			} `json:"embeddings"`
+		}
+		preds := make([]Pred, len(req.Instances))
+		for i := range req.Instances {
+			preds[i].Embeddings.Values = []float32{0.1, 0.2, 0.3, float32(i + 1)}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"predictions": preds,
+		})
+	}))
+	defer ts.Close()
+
+	s := &ServerState{
+		embedEndpoint: ts.URL,
+		region:        "europe-west1",
+		projectID:     "mock-project",
+	}
+
+	embs, err := s.generateEmbeddings(context.Background(), []string{"texte 1", "texte 2"}, "RETRIEVAL_DOCUMENT")
+	if err != nil {
+		t.Fatalf("generateEmbeddings a échoué: %v", err)
+	}
+
+	if len(embs) != 2 {
+		t.Fatalf("attendu 2 embeddings, obtenu %d", len(embs))
+	}
+	if len(embs[0]) != 4 || len(embs[1]) != 4 {
+		t.Fatalf("taille de dimension incorrecte: %d et %d", len(embs[0]), len(embs[1]))
+	}
+	if embs[0][3] != 1.0 || embs[1][3] != 2.0 {
+		t.Errorf("valeurs embeddings inattendues: %v, %v", embs[0], embs[1])
+	}
+}
+
+func TestSearchDocumentsHybridSemanticMatch(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Instances []struct {
+				Content  string `json:"content"`
+				TaskType string `json:"task_type"`
+			} `json:"instances"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+
+		preds := make([]map[string]any, len(req.Instances))
+		for i, inst := range req.Instances {
+			var vals []float32
+			if strings.Contains(strings.ToLower(inst.Content), "facture") || strings.Contains(strings.ToLower(inst.Content), "finops") {
+				vals = []float32{0.9, 0.1, 0.0}
+			} else {
+				vals = []float32{0.0, 0.1, 0.9}
+			}
+			preds[i] = map[string]any{
+				"embeddings": map[string]any{
+					"values": vals,
+				},
+			}
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"predictions": preds,
+		})
+	}))
+	defer ts.Close()
+
+	docFinOps := newDocument("doc-finops", "FinOps Guide", "gs://b/finops", "Stratégies d'optimisation des dépenses et maîtrise budgétaire.", time.Now())
+	docFinOps.Chunks[0].Embedding = []float32{0.9, 0.1, 0.0}
+
+	docWAF := newDocument("doc-waf", "WAF Security", "gs://b/waf", "Filtrage des requêtes HTTP et règles Cloud Armor.", time.Now())
+	docWAF.Chunks[0].Embedding = []float32{0.0, 0.1, 0.9}
+
+	s := &ServerState{
+		embedEndpoint: ts.URL,
+		documents:     []Document{docFinOps, docWAF},
+	}
+
+	results, searchType := s.searchDocumentsHybrid(context.Background(), "Comment limiter ma facture ?")
+
+	if searchType != "hybrid" {
+		t.Errorf("searchType = %q, attendu 'hybrid'", searchType)
+	}
+	if len(results) == 0 {
+		t.Fatalf("aucun résultat retourné par searchDocumentsHybrid")
+	}
+	if results[0].DocumentTitle != "FinOps Guide" {
+		t.Errorf("résultat #1 attendu 'FinOps Guide', obtenu %q (score: %f)", results[0].DocumentTitle, results[0].Score)
+	}
+	if results[0].SemanticScore <= 0 {
+		t.Errorf("score sémantique attendu > 0, obtenu %f", results[0].SemanticScore)
+	}
+}
+
+func TestSearchDocumentsHybridFallback(t *testing.T) {
+	s := &ServerState{
+		embedEndpoint: "http://127.0.0.1:1/nonexistent",
+		documents: []Document{
+			newDocument("doc-1", "Sécurité Cloud Armor", "gs://b/1", "Protection anti-DDoS et règles de sécurité WAF.", time.Now()),
+			newDocument("doc-2", "BigQuery Analytics", "gs://b/2", "Requêtes SQL et partitionnement de tables.", time.Now()),
+		},
+	}
+
+	results, searchType := s.searchDocumentsHybrid(context.Background(), "Protection anti-DDoS")
+
+	if searchType != "lexical" {
+		t.Errorf("searchType = %q, attendu repli 'lexical'", searchType)
+	}
+	if len(results) == 0 {
+		t.Fatalf("aucun résultat retourné lors du repli lexical")
+	}
+	if results[0].DocumentTitle != "Sécurité Cloud Armor" {
+		t.Errorf("résultat #1 attendu 'Sécurité Cloud Armor', obtenu %q", results[0].DocumentTitle)
+	}
+}
+
+func TestEnsureCorpusEmbeddingsWithMockServer(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Instances []struct {
+				Content string `json:"content"`
+			} `json:"instances"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		preds := make([]map[string]any, len(req.Instances))
+		for i := range req.Instances {
+			preds[i] = map[string]any{
+				"embeddings": map[string]any{
+					"values": []float32{0.5, 0.5},
+				},
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"predictions": preds,
+		})
+	}))
+	defer ts.Close()
+
+	s := &ServerState{
+		embedEndpoint: ts.URL,
+		documents: []Document{
+			newDocument("doc-1", "Titre 1", "gs://b/1", "Contenu sans embedding.", time.Now()),
+		},
+	}
+
+	if len(s.documents[0].Chunks[0].Embedding) != 0 {
+		t.Fatalf("l'embedding initial doit être vide")
+	}
+
+	s.ensureCorpusEmbeddings(context.Background())
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.documents[0].Chunks[0].Embedding) != 2 {
+		t.Fatalf("l'embedding doit avoir été enrichi, obtenu dimension %d", len(s.documents[0].Chunks[0].Embedding))
+	}
+}
+
