@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"compress/zlib"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -557,5 +560,166 @@ ET
 	got := extractTextFromPDF(pdf.Bytes())
 	if !strings.Contains(got, "A") || !strings.Contains(got, "l'anarchie") {
 		t.Errorf("extractTextFromPDF = %q, attendu 'A l'anarchie'", got)
+	}
+}
+
+func TestHandleDocumentsGet(t *testing.T) {
+	s := &ServerState{
+		documents: []Document{
+			newDocument("doc-1", "Doc 1", "gs://bucket/1", "Contenu 1", time.Now()),
+			newDocument("doc-2", "Doc 2", "gs://bucket/2", "Contenu 2", time.Now()),
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/documents", nil)
+	w := httptest.NewRecorder()
+	s.handleDocuments(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("handleDocuments GET code = %d, attendu %d", w.Code, http.StatusOK)
+	}
+
+	var docs []Document
+	if err := json.NewDecoder(w.Body).Decode(&docs); err != nil {
+		t.Fatalf("décodage json impossible: %v", err)
+	}
+	if len(docs) != 2 {
+		t.Fatalf("attendu 2 documents, obtenu %d", len(docs))
+	}
+	if docs[0].ID != "doc-1" || docs[1].ID != "doc-2" {
+		t.Errorf("documents reçus inattendus: %+v", docs)
+	}
+}
+
+func TestHandleDocumentsDeleteSingle(t *testing.T) {
+	s := &ServerState{
+		documents: []Document{
+			newDocument("doc-1", "Doc 1", "gs://bucket/1", "Contenu 1", time.Now()),
+			newDocument("doc-2", "Doc 2", "gs://bucket/2", "Contenu 2", time.Now()),
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/documents?id=doc-1", nil)
+	w := httptest.NewRecorder()
+	s.handleDocuments(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("handleDocuments DELETE single code = %d, attendu %d", w.Code, http.StatusOK)
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("décodage json impossible: %v", err)
+	}
+	if resp["status"] != "deleted" || resp["id"] != "doc-1" {
+		t.Errorf("réponse inattendue: %+v", resp)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.documents) != 1 || s.documents[0].ID != "doc-2" {
+		t.Errorf("état des documents après suppression incorrect: %+v", s.documents)
+	}
+}
+
+func TestHandleDocumentsDeleteNotFound(t *testing.T) {
+	s := &ServerState{
+		documents: []Document{
+			newDocument("doc-1", "Doc 1", "gs://bucket/1", "Contenu 1", time.Now()),
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/documents?id=non-existant", nil)
+	w := httptest.NewRecorder()
+	s.handleDocuments(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("handleDocuments DELETE not found code = %d, attendu %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleDocumentsDeleteAll(t *testing.T) {
+	s := &ServerState{
+		documents: []Document{
+			newDocument("doc-1", "Doc 1", "gs://bucket/1", "Contenu 1", time.Now()),
+			newDocument("doc-2", "Doc 2", "gs://bucket/2", "Contenu 2", time.Now()),
+			newDocument("doc-3", "Doc 3", "gs://bucket/3", "Contenu 3", time.Now()),
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/documents?all=true", nil)
+	w := httptest.NewRecorder()
+	s.handleDocuments(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("handleDocuments DELETE all code = %d, attendu %d", w.Code, http.StatusOK)
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("décodage json impossible: %v", err)
+	}
+	if resp["status"] != "cleared" {
+		t.Errorf("réponse inattendue: %+v", resp)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.documents) != 0 {
+		t.Errorf("le corpus n'a pas été entièrement vidé: %+v", s.documents)
+	}
+}
+
+func TestHandleDocumentsDeleteBadRequest(t *testing.T) {
+	s := &ServerState{
+		documents: []Document{
+			newDocument("doc-1", "Doc 1", "gs://bucket/1", "Contenu 1", time.Now()),
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/documents", nil)
+	w := httptest.NewRecorder()
+	s.handleDocuments(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("handleDocuments DELETE sans paramètre code = %d, attendu %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleUploadReturnsTelemetry(t *testing.T) {
+	s := &ServerState{}
+	payload := `{"title": "Test Telemetrie", "content": "Contenu riche pour tester la generation de chunks et la telemetrie d'upload."}`
+	req := httptest.NewRequest(http.MethodPost, "/api/documents/upload", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	s.handleUpload(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("handleUpload code = %d, attendu %d", w.Code, http.StatusOK)
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("décodage json impossible: %v", err)
+	}
+
+	if resp["status"] != "ok" {
+		t.Errorf("status attendu 'ok', obtenu %v", resp["status"])
+	}
+	if cnt, ok := resp["count"].(float64); !ok || cnt != 1 {
+		t.Errorf("count attendu 1, obtenu %v", resp["count"])
+	}
+	if chunks, ok := resp["total_chunks"].(float64); !ok || chunks < 1 {
+		t.Errorf("total_chunks attendu >= 1, obtenu %v", resp["total_chunks"])
+	}
+	if bytes, ok := resp["total_bytes"].(float64); !ok || bytes <= 0 {
+		t.Errorf("total_bytes attendu > 0, obtenu %v", resp["total_bytes"])
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.documents) != 1 {
+		t.Errorf("document non ajouté au corpus, len = %d", len(s.documents))
 	}
 }

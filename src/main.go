@@ -228,13 +228,73 @@ func main() {
 	log.Println("✅ Serveur arrêté proprement")
 }
 
-// Handler Documents : liste des documents indexés
+// Handler Documents : liste des documents indexés ou suppression (unitaire ou globale)
 func (s *ServerState) handleDocuments(w http.ResponseWriter, r *http.Request) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	switch r.Method {
+	case http.MethodGet:
+		s.mu.RLock()
+		defer s.mu.RUnlock()
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(s.documents)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(s.documents)
+
+	case http.MethodDelete:
+		id := strings.TrimSpace(r.URL.Query().Get("id"))
+		all := r.URL.Query().Get("all") == "true"
+
+		if !all && id == "" {
+			http.Error(w, "Paramètre 'id' ou 'all=true' requis pour la suppression", http.StatusBadRequest)
+			return
+		}
+
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		if all {
+			deletedCount := len(s.documents)
+			s.documents = []Document{}
+			log.Printf("🗑️  Purge complète du corpus documentaire (%d documents supprimés)", deletedCount)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"status":          "cleared",
+				"deleted_count":   deletedCount,
+				"remaining_count": 0,
+			})
+			return
+		}
+
+		found := false
+		filtered := make([]Document, 0, len(s.documents))
+		var deletedTitle string
+		for _, doc := range s.documents {
+			if doc.ID == id {
+				found = true
+				deletedTitle = doc.Title
+				continue
+			}
+			filtered = append(filtered, doc)
+		}
+
+		if !found {
+			http.Error(w, fmt.Sprintf("Document non trouvé : %s", id), http.StatusNotFound)
+			return
+		}
+
+		s.documents = filtered
+		remCount := len(s.documents)
+		log.Printf("🗑️  Document %q (id: %s) supprimé (%d restants)", deletedTitle, id, remCount)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":          "deleted",
+			"id":              id,
+			"deleted_title":   deletedTitle,
+			"remaining_count": remCount,
+		})
+
+	default:
+		http.Error(w, "Méthode non autorisée", http.StatusMethodNotAllowed)
+	}
 }
 
 // Handler Models : liste des modèles disponibles et modèle actuellement actif
@@ -405,25 +465,35 @@ func (s *ServerState) handleUpload(w http.ResponseWriter, r *http.Request) {
 	// requête suivante, et les documents restaient affichés « Indexation... »
 	// pendant un temps arbitrairement long.
 	totalChunks := 0
+	totalBytes := 0
 	s.mu.Lock()
 	for i := range addedDocs {
 		totalChunks += addedDocs[i].NumChunks
+		totalBytes += addedDocs[i].SizeBytes
 		s.documents = append([]Document{addedDocs[i]}, s.documents...)
 	}
 	s.mu.Unlock()
 
-	log.Printf("📥 %d document(s) reçu(s), %d chunk(s) indexé(s) dans le corpus", len(addedDocs), totalChunks)
+	log.Printf("📥 %d document(s) reçu(s), %d chunk(s) indexé(s) dans le corpus (%d octets)", len(addedDocs), totalChunks, totalBytes)
 
 	w.Header().Set("Content-Type", "application/json")
-	if len(addedDocs) == 1 {
-		json.NewEncoder(w).Encode(addedDocs[0])
-	} else {
-		json.NewEncoder(w).Encode(map[string]any{
-			"status":    "ok",
-			"count":     len(addedDocs),
-			"documents": addedDocs,
-		})
+	resp := map[string]any{
+		"status":       "ok",
+		"count":        len(addedDocs),
+		"total_chunks": totalChunks,
+		"total_bytes":  totalBytes,
+		"documents":    addedDocs,
 	}
+	if len(addedDocs) == 1 {
+		resp["id"] = addedDocs[0].ID
+		resp["title"] = addedDocs[0].Title
+		resp["source"] = addedDocs[0].Source
+		resp["snippet"] = addedDocs[0].Snippet
+		resp["num_chunks"] = addedDocs[0].NumChunks
+		resp["size_bytes"] = addedDocs[0].SizeBytes
+		resp["created_at"] = addedDocs[0].CreatedAt
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 // Constantes de traitement documentaire.
