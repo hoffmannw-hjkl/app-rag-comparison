@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Déploiement serverless sur Google Cloud Run
-GCP_PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+GCP_PROJECT="${GCP_PROJECT:-wh-ai-blueprint-a363}"
 GCP_REGION="${GCP_REGION:-europe-west1}"
 SERVICE_NAME="rag-comparison-demo"
 IMAGE_TAG="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/ai-demo-repo/rag-comparison:latest"
