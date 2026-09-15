@@ -1,0 +1,26 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
+    groups:
+      dependencies:
+        patterns:
+          - "*"
+
+  # L'application n'a aucune dépendance Go externe : son image de base est donc
+  # sa seule dépendance versionnée, et toute sa surface de vulnérabilité passe par
+  # la stdlib qu'elle embarque. C'est exactement la dérive qui a produit les 31
+  # failles corrigées en montant golang:1.22 vers 1.26 ; ce suivi la signale
+  # désormais d'elle-même.
+  - package-ecosystem: "docker"
+    directory: "/src"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7

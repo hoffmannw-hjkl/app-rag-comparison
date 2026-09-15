@@ -16,10 +16,21 @@ on:
 permissions:
   contents: read
 
+# Garde-fou repris de la CI standard de l'organisation : un nouveau push sur une
+# branche annule le run précédent encore en cours, qui porte de toute façon sur
+# un code périmé. Évite d'accumuler des exécutions concurrentes inutiles.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Test & Build Go Application
     runs-on: ubuntu-latest
+    # Plafond repris de la CI standard de l'organisation : borne le coût d'un job
+    # qui partirait en boucle plutôt que de le laisser courir jusqu'à la limite
+    # par défaut de GitHub (6 heures).
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -63,6 +74,7 @@ jobs:
   security:
     name: Static Analysis & Vulnerability Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
