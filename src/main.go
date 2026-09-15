@@ -715,7 +715,7 @@ const (
 	maxMemoryBytes = 10 << 20 // Part de l'upload conservée en mémoire, le reste va sur disque
 	chunkSize      = 1000     // Taille cible d'un chunk, en runes
 	chunkOverlap   = 100      // Chevauchement entre deux chunks consécutifs, en runes
-	topKChunks     = 5        // Nombre de passages transmis au modèle pour le grounding
+	topKChunks     = 8        // Nombre de passages transmis au modèle pour le grounding
 )
 
 // Regex compilées une seule fois au chargement du package plutôt qu'à chaque appel.
@@ -1415,7 +1415,7 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		"message": fmt.Sprintf("Génération de la synthèse groundée avec %s...", activeModel),
 	})
 
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
 	startTime := time.Now()
@@ -1531,7 +1531,7 @@ func (s *ServerState) searchDocuments(query string) []SearchChunk {
 
 			matches = append(matches, SearchChunk{
 				DocumentTitle: doc.Title,
-				Snippet:       truncateText(chunk.Text, 600),
+				Snippet:       chunk.Text,
 				Score:         score,
 				SourceURI:     doc.Source,
 				ChunkIndex:    chunk.Index,
@@ -1672,7 +1672,7 @@ func (s *ServerState) searchDocumentsHybrid(ctx context.Context, query string) (
 			candidates = append(candidates, scoredCandidate{
 				chunk: SearchChunk{
 					DocumentTitle: doc.Title,
-					Snippet:       truncateText(chunk.Text, 600),
+					Snippet:       chunk.Text,
 					Score:         math.Round(finalScore*1000) / 1000,
 					SemanticScore: math.Round(semScore*1000) / 1000,
 					LexicalScore:  math.Round(normLexScore*1000) / 1000,
@@ -1768,7 +1768,7 @@ func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, ch
 			i+1, c.DocumentTitle, c.ChunkIndex+1, c.Snippet)
 	}
 
-	systemInstruction := "Tu es un assistant IA d'architecture Google Cloud. Réponds à la question de manière concise et précise en t'appuyant rigoureusement sur le contexte documentaire fourni ci-dessous. Mentionne explicitement les sources utilisées entre crochets (ex: [Source 1]). Si le contexte ne permet pas de répondre, indique-le explicitement plutôt que d'inventer."
+	systemInstruction := "Tu es un assistant IA d'architecture Google Cloud. Réponds à la question de manière claire, rigoureuse et exhaustive en t'appuyant rigoureusement sur le contexte documentaire fourni ci-dessous. Développe chaque point nécessaire pour fournir une réponse complète, sans jamais abréger ni tronquer tes explications ou conclusions. Mentionne explicitement les sources utilisées entre crochets (ex: [Source 1]). Si le contexte ne permet pas de répondre, indique-le explicitement plutôt que d'inventer."
 
 	contextSection := contextBuilder.String()
 	if contextSection == "" {
@@ -1798,7 +1798,7 @@ func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, ch
 		},
 		"generationConfig": map[string]any{
 			"temperature":     0.2,
-			"maxOutputTokens": 1024,
+			"maxOutputTokens": 8192,
 		},
 	}
 
@@ -1853,7 +1853,8 @@ func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, ch
 
 		var vResp struct {
 			Candidates []struct {
-				Content struct {
+				FinishReason string `json:"finishReason"`
+				Content      struct {
 					Parts []struct {
 						Text string `json:"text"`
 					} `json:"parts"`
@@ -1877,6 +1878,9 @@ func (s *ServerState) streamGeminiResponse(ctx context.Context, query string, ch
 			candidateTokens = vResp.UsageMetadata.CandidatesTokenCount
 		}
 		for _, cand := range vResp.Candidates {
+			if cand.FinishReason == "MAX_TOKENS" {
+				log.Printf("⚠️  Plafond maxOutputTokens atteint pour le modèle %s", modelName)
+			}
 			for _, p := range cand.Content.Parts {
 				if p.Text != "" {
 					onToken(p.Text)
