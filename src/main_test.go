@@ -453,3 +453,109 @@ func TestSearchDocumentsIgnoresAccents(t *testing.T) {
 		t.Error("une requête accentuée doit retrouver le même contenu")
 	}
 }
+
+func TestParseToUnicodeCMap(t *testing.T) {
+	cmapContent := []byte(`
+/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+2 beginbfchar
+<0002> <0021>
+<0051> <0070>
+endbfchar
+1 beginbfrange
+<0042> <0044> <0061>
+endbfrange
+endcmap
+`)
+
+	cmap := make(map[uint32]string)
+	parseToUnicodeCMap(cmapContent, cmap)
+
+	if got := cmap[0x0002]; got != "!" {
+		t.Errorf("cmap[0x0002] = %q, attendu '!'", got)
+	}
+	if got := cmap[0x0051]; got != "p" {
+		t.Errorf("cmap[0x0051] = %q, attendu 'p'", got)
+	}
+	if got := cmap[0x0042]; got != "a" {
+		t.Errorf("cmap[0x0042] = %q, attendu 'a'", got)
+	}
+	if got := cmap[0x0043]; got != "b" {
+		t.Errorf("cmap[0x0043] = %q, attendu 'b'", got)
+	}
+	if got := cmap[0x0044]; got != "c" {
+		t.Errorf("cmap[0x0044] = %q, attendu 'c'", got)
+	}
+}
+
+func TestDecodePDFHexStringWithCMap(t *testing.T) {
+	cmap := map[uint32]string{
+		0x0051: "p",
+		0x0053: "r",
+		0x0046: "e",
+	}
+
+	got := decodePDFHexString("005100530046", cmap)
+	if got != "pre" {
+		t.Errorf("decodePDFHexString avec CMap = %q, attendu 'pre'", got)
+	}
+}
+
+func TestDecodePDFHexStringUTF16BE(t *testing.T) {
+	// "FEFF" + "0048 0065 006C 006C 006F" -> "Hello"
+	got := decodePDFHexString("FEFF00480065006C006C006F", nil)
+	if got != "Hello" {
+		t.Errorf("decodePDFHexString UTF-16BE = %q, attendu 'Hello'", got)
+	}
+}
+
+func TestDecodePDFHexStringASCIIHex(t *testing.T) {
+	// "48656C6C6F" -> "Hello"
+	got := decodePDFHexString("48656C6C6F", nil)
+	if got != "Hello" {
+		t.Errorf("decodePDFHexString ASCII hex = %q, attendu 'Hello'", got)
+	}
+}
+
+func TestExtractTextFromPDFWithCMapAndHexArray(t *testing.T) {
+	cmapRaw := []byte(`
+begincmap
+1 beginbfchar
+<0001> <0041>
+endbfchar
+endcmap
+`)
+	var cmapBuf bytes.Buffer
+	zw := zlib.NewWriter(&cmapBuf)
+	zw.Write(cmapRaw)
+	zw.Close()
+
+	contentRaw := []byte(`
+BT
+/F1 12 Tf
+[<0001> -250 (l'anarchie)] TJ
+ET
+`)
+	var contentBuf bytes.Buffer
+	zw2 := zlib.NewWriter(&contentBuf)
+	zw2.Write(contentRaw)
+	zw2.Close()
+
+	var pdf bytes.Buffer
+	pdf.WriteString("%PDF-1.4\n")
+	pdf.WriteString("1 0 obj << /Length 100 >> stream\n")
+	pdf.Write(cmapBuf.Bytes())
+	pdf.WriteString("\nendstream\nendobj\n")
+	pdf.WriteString("2 0 obj << /Length 100 >> stream\n")
+	pdf.Write(contentBuf.Bytes())
+	pdf.WriteString("\nendstream\nendobj\n%%EOF")
+
+	got := extractTextFromPDF(pdf.Bytes())
+	if !strings.Contains(got, "A") || !strings.Contains(got, "l'anarchie") {
+		t.Errorf("extractTextFromPDF = %q, attendu 'A l'anarchie'", got)
+	}
+}

@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -436,18 +437,27 @@ const (
 
 // Regex compilées une seule fois au chargement du package plutôt qu'à chaque appel.
 var (
-	// Opérateur d'affichage simple : (texte) Tj
-	rePDFShowText = regexp.MustCompile(`\(((?:[^()\\]|\\.)*)\)\s*(?:Tj|')`)
-	// Tableau de crénage : [(V)94(ersion)-375(Managemen)31(t)] TJ.
-	// C'est la forme employée par la plupart des générateurs (TeX, dvips) et elle
-	// porte l'essentiel du texte : l'ignorer revient à ne rien extraire du document.
+	// Opérateur d'affichage simple : (texte) Tj ou <hex> Tj (et variantes ' et ")
+	rePDFShowText = regexp.MustCompile(`(?:\(((?:[^()\\]|\\.)*)\)|<([0-9A-Fa-f\s]+)>)\s*(?:Tj|'|")`)
+	// Tableau de crénage : [(V)94(ersion)-375(Managemen)31(t)] TJ ou [<00510053>8<0046>] TJ
+	// C'est la forme employée par la plupart des générateurs (TeX, InDesign, dvips)
+	// et elle porte l'essentiel du texte : l'ignorer revient à ne rien extraire.
 	rePDFShowArray = regexp.MustCompile(`(?s)\[((?:[^\[\]\\]|\\.)*)\]\s*TJ`)
-	// Éléments d'un tableau de crénage : chaînes littérales et valeurs de crénage.
-	rePDFArrayItem = regexp.MustCompile(`\(((?:[^()\\]|\\.)*)\)|(-?\d+(?:\.\d+)?)`)
+	// Éléments d'un tableau de crénage : chaînes littérales, chaînes hexadécimales et valeurs de crénage.
+	rePDFArrayItem = regexp.MustCompile(`\(((?:[^()\\]|\\.)*)\)|<([0-9A-Fa-f\s]+)>|(-?\d+(?:\.\d+)?)`)
 	// Objets stream/endstream, dont le contenu est généralement compressé
 	rePDFStream = regexp.MustCompile(`(?s)stream\r?\n?(.*?)endstream`)
 	// Caractères interdits ou risqués dans un titre de document
 	reUnsafeTitle = regexp.MustCompile(`[<>"'&\x00-\x1f\x7f]`)
+
+	// Parsing des tables de correspondance ToUnicode CMap (indispensable pour
+	// les PDF produits par TeX, LaTeX, InDesign ou LibreOffice avec polices intégrées).
+	rePDFBFCharBlock  = regexp.MustCompile(`(?s)beginbfchar(.*?)endbfchar`)
+	rePDFBFChar       = regexp.MustCompile(`<([0-9A-Fa-f]+)>\s+<([0-9A-Fa-f]+)>`)
+	rePDFBFRangeBlock = regexp.MustCompile(`(?s)beginbfrange(.*?)endbfrange`)
+	rePDFBFRange      = regexp.MustCompile(`<([0-9A-Fa-f]+)>\s+<([0-9A-Fa-f]+)>\s+<([0-9A-Fa-f]+)>`)
+	rePDFBFRangeArray = regexp.MustCompile(`(?s)<([0-9A-Fa-f]+)>\s+<([0-9A-Fa-f]+)>\s+\[(.*?)\]`)
+	rePDFHexToken     = regexp.MustCompile(`<([0-9A-Fa-f]+)>`)
 )
 
 // kerningSpaceThreshold : en deçà de cette valeur (en millièmes d'unité de texte),
@@ -457,18 +467,25 @@ const kerningSpaceThreshold = -150
 
 // extractTextFromPDF extrait le texte lisible d'un flux binaire PDF.
 //
-// Deux écueils sont traités ici. D'une part, la quasi-totalité des PDF réels
-// compressent leurs flux de contenu : une regex appliquée aux octets bruts n'y
-// trouve aucun opérateur de texte. D'autre part, appliquer cette regex au binaire
-// compressé produit des correspondances fortuites qui polluent le corpus avec des
-// séquences illisibles. On ne retient donc que des chaînes qui ressemblent
-// réellement à du texte, et on n'inspecte les octets bruts que si aucun flux n'a
-// pu être décompressé.
+// Trois écueils sont traités ici :
+//  1. La compression des flux : traitée par inflateStream (zlib et deflate brut).
+//  2. L'encodage des glyphes par CMap ToUnicode : les générateurs modernes (TeX,
+//     InDesign) émettent des chaînes hexadécimales <00510053...> dont les codes
+//     ne correspondent pas à l'ASCII mais à une table CMap embarquée.
+//  3. Le bruit binaire : les chaînes candidates sont filtrées token par token
+//     via looksLikeText pour ne jamais polluer le corpus de résidus compressés.
 func extractTextFromPDF(data []byte) string {
 	var sb strings.Builder
 	decodedStreams := 0
 
-	// 1. Décompression des flux puis extraction des opérateurs de texte.
+	// 1. Décompression de tous les flux et séparation des CMaps ToUnicode
+	//    des flux de contenu textuel.
+	cmap := make(map[uint32]string)
+	type decompressedStream struct {
+		content []byte
+	}
+	var contentStreams []decompressedStream
+
 	for _, m := range rePDFStream.FindAllSubmatch(data, -1) {
 		if len(m) < 2 {
 			continue
@@ -478,19 +495,28 @@ func extractTextFromPDF(data []byte) string {
 			continue
 		}
 		decodedStreams++
-		appendPDFOperators(&sb, decoded)
+
+		// Les flux CMap définissent les correspondances glyphes -> Unicode
+		if bytes.Contains(decoded, []byte("begincmap")) {
+			parseToUnicodeCMap(decoded, cmap)
+		} else {
+			contentStreams = append(contentStreams, decompressedStream{content: decoded})
+		}
 	}
 
-	// 2. Aucun flux décompressable : le document est probablement en clair.
-	//    On n'applique ce repli que dans ce cas précis, sous peine de rapatrier
-	//    des correspondances parasites issues des données binaires compressées.
+	// 2. Extraction des opérateurs de texte sur les flux de contenu décompressés
+	for _, cs := range contentStreams {
+		appendPDFOperators(&sb, cs.content, cmap)
+	}
+
+	// 3. Aucun flux décompressable : le document est probablement en clair.
 	if decodedStreams == 0 {
-		appendPDFOperators(&sb, data)
+		appendPDFOperators(&sb, data, cmap)
 	}
 
 	extracted := normalizeWhitespace(sb.String())
 
-	// 3. Dernier recours pour les documents en clair sans opérateur exploitable.
+	// 4. Dernier recours pour les documents en clair sans opérateur exploitable.
 	if utf8.RuneCountInString(extracted) < 40 && decodedStreams == 0 {
 		if words := extractPrintableWords(data); looksLikeText(words) {
 			extracted = words
@@ -675,31 +701,38 @@ func sanitizeFilename(name string) string {
 
 // appendPDFOperators extrait le texte des opérateurs d'affichage d'un flux.
 //
-// Les deux formes d'affichage sont traitées : l'opérateur simple `(texte) Tj` et
-// le tableau de crénage `[(V)94(ersion)] TJ`. Les correspondances sont parcourues
-// dans l'ordre de leur position afin de préserver l'ordre de lecture du document.
-//
-// Chaque chaîne candidate est validée : sur un flux binaire, la regex produit des
-// correspondances fortuites qu'il faut écarter avant qu'elles n'atteignent le corpus.
-func appendPDFOperators(sb *strings.Builder, content []byte) {
+// Les deux formes d'affichage sont traitées : l'opérateur simple (texte Tj, <hex> Tj,
+// ', ") et le tableau de crénage [(texte) -250 <hex>] TJ. Les correspondances sont
+// parcourues dans l'ordre de leur position afin de préserver l'ordre de lecture.
+func appendPDFOperators(sb *strings.Builder, content []byte, cmap map[uint32]string) {
 	type match struct {
 		pos  int
 		text string
 	}
 	var matches []match
 
-	for _, idx := range rePDFShowText.FindAllSubmatchIndex(content, -1) {
-		if idx[2] < 0 {
-			continue
+	// 1. Opérateurs d'affichage simple : (texte) Tj ou <hex> Tj (et variantes ' et ")
+	for _, m := range rePDFShowText.FindAllSubmatchIndex(content, -1) {
+		var text string
+		if m[2] >= 0 {
+			text = cleanPDFString(string(content[m[2]:m[3]]))
+		} else if m[4] >= 0 {
+			text = decodePDFHexString(string(content[m[4]:m[5]]), cmap)
 		}
-		matches = append(matches, match{pos: idx[0], text: cleanPDFString(string(content[idx[2]:idx[3]]))})
+		if text != "" {
+			matches = append(matches, match{pos: m[0], text: text})
+		}
 	}
 
+	// 2. Tableaux de crénage : [ ... ] TJ
 	for _, idx := range rePDFShowArray.FindAllSubmatchIndex(content, -1) {
 		if idx[2] < 0 {
 			continue
 		}
-		matches = append(matches, match{pos: idx[0], text: decodeKerningArray(content[idx[2]:idx[3]])})
+		text := decodeKerningArray(content[idx[2]:idx[3]], cmap)
+		if text != "" {
+			matches = append(matches, match{pos: idx[0], text: text})
+		}
 	}
 
 	sort.Slice(matches, func(i, j int) bool { return matches[i].pos < matches[j].pos })
@@ -715,25 +748,204 @@ func appendPDFOperators(sb *strings.Builder, content []byte) {
 
 // decodeKerningArray reconstitue le texte d'un tableau d'affichage TJ.
 //
-// Un tableau alterne chaînes littérales et déplacements de crénage. Les
-// déplacements suffisamment négatifs correspondent à des espaces inter-mots, que
-// le fichier ne matérialise pas autrement : sans cette reconstitution, le texte
-// extrait serait une suite de mots agglutinés.
-func decodeKerningArray(array []byte) string {
+// Un tableau alterne chaînes littérales, chaînes hexadécimales et déplacements
+// de crénage. Les déplacements suffisamment négatifs correspondent à des espaces
+// inter-mots, que le fichier ne matérialise pas autrement.
+func decodeKerningArray(array []byte, cmap map[uint32]string) string {
 	var sb strings.Builder
 
 	for _, m := range rePDFArrayItem.FindAllSubmatch(array, -1) {
 		switch {
-		case m[1] != nil:
+		case len(m[1]) > 0:
 			sb.WriteString(cleanPDFString(string(m[1])))
 		case len(m[2]) > 0:
-			if kern, err := strconv.ParseFloat(string(m[2]), 64); err == nil && kern <= kerningSpaceThreshold {
+			sb.WriteString(decodePDFHexString(string(m[2]), cmap))
+		case len(m[3]) > 0:
+			if kern, err := strconv.ParseFloat(string(m[3]), 64); err == nil && kern <= kerningSpaceThreshold {
 				sb.WriteString(" ")
 			}
 		}
 	}
 
 	return strings.TrimSpace(sb.String())
+}
+
+// decodePDFHexString convertit une chaîne hexadécimale PDF en texte Unicode.
+//
+// Si une table CMap ToUnicode est fournie (polices intégrées TeX, InDesign, etc.),
+// les codes de glyphes y sont convertis vers leur caractère Unicode réel.
+// Sans CMap, la fonction tente l'UTF-16BE (avec ou sans BOM FEFF) puis le 8-bit standard.
+func decodePDFHexString(rawHex string, cmap map[uint32]string) string {
+	var cleaned []byte
+	for i := 0; i < len(rawHex); i++ {
+		b := rawHex[i]
+		switch {
+		case b >= '0' && b <= '9', b >= 'a' && b <= 'f', b >= 'A' && b <= 'F':
+			cleaned = append(cleaned, b)
+		}
+	}
+	if len(cleaned) == 0 {
+		return ""
+	}
+	if len(cleaned)%2 != 0 {
+		cleaned = append(cleaned, '0')
+	}
+
+	var sb strings.Builder
+
+	// 1. Décodage via CMap ToUnicode
+	if len(cmap) > 0 {
+		if len(cleaned)%4 == 0 {
+			for i := 0; i < len(cleaned); i += 4 {
+				code, err := strconv.ParseUint(string(cleaned[i:i+4]), 16, 32)
+				if err != nil {
+					continue
+				}
+				if mapped, ok := cmap[uint32(code)]; ok {
+					sb.WriteString(mapped)
+				} else if code >= 32 && code < 127 {
+					sb.WriteRune(rune(code))
+				}
+			}
+			return sb.String()
+		}
+		if len(cleaned)%2 == 0 {
+			for i := 0; i < len(cleaned); i += 2 {
+				code, err := strconv.ParseUint(string(cleaned[i:i+2]), 16, 32)
+				if err != nil {
+					continue
+				}
+				if mapped, ok := cmap[uint32(code)]; ok {
+					sb.WriteString(mapped)
+				} else if code >= 32 && code < 127 {
+					sb.WriteRune(rune(code))
+				}
+			}
+			return sb.String()
+		}
+	}
+
+	// 2. Détection et décodage UTF-16BE sans CMap
+	if len(cleaned) >= 4 && len(cleaned)%4 == 0 {
+		isUTF16 := strings.HasPrefix(strings.ToUpper(string(cleaned)), "FEFF")
+		if !isUTF16 && len(cleaned) >= 8 {
+			nullCount := 0
+			for i := 0; i < len(cleaned); i += 4 {
+				if cleaned[i] == '0' && cleaned[i+1] == '0' {
+					nullCount++
+				}
+			}
+			if float64(nullCount)/float64(len(cleaned)/4) > 0.6 {
+				isUTF16 = true
+			}
+		}
+		if isUTF16 {
+			start := 0
+			if strings.HasPrefix(strings.ToUpper(string(cleaned)), "FEFF") {
+				start = 4
+			}
+			var u16 []uint16
+			for i := start; i < len(cleaned); i += 4 {
+				v, err := strconv.ParseUint(string(cleaned[i:i+4]), 16, 16)
+				if err == nil {
+					u16 = append(u16, uint16(v))
+				}
+			}
+			return string(utf16.Decode(u16))
+		}
+	}
+
+	// 3. Décodage hexadécimal 8-bit standard (<48656C6C6F> -> "Hello")
+	var rawBytes []byte
+	for i := 0; i < len(cleaned); i += 2 {
+		v, err := strconv.ParseUint(string(cleaned[i:i+2]), 16, 8)
+		if err != nil {
+			return ""
+		}
+		rawBytes = append(rawBytes, byte(v))
+	}
+	return cleanPDFString(string(rawBytes))
+}
+
+// decodeHexUTF16 décode une chaîne hexadécimale en caractères UTF-16 ou ASCII.
+func decodeHexUTF16(hexStr string) string {
+	if len(hexStr)%4 == 0 && len(hexStr) >= 4 {
+		var u16 []uint16
+		for i := 0; i < len(hexStr); i += 4 {
+			v, err := strconv.ParseUint(hexStr[i:i+4], 16, 16)
+			if err != nil {
+				return ""
+			}
+			u16 = append(u16, uint16(v))
+		}
+		return string(utf16.Decode(u16))
+	}
+	if len(hexStr)%2 == 0 {
+		var sb strings.Builder
+		for i := 0; i < len(hexStr); i += 2 {
+			v, err := strconv.ParseUint(hexStr[i:i+2], 16, 8)
+			if err != nil {
+				return ""
+			}
+			sb.WriteByte(byte(v))
+		}
+		return sb.String()
+	}
+	return ""
+}
+
+// parseToUnicodeCMap extrait les correspondances de glyphes vers Unicode d'un CMap PDF.
+// Un CMap définit des blocs beginbfchar ... endbfchar et beginbfrange ... endbfrange.
+func parseToUnicodeCMap(content []byte, cmap map[uint32]string) {
+	if !bytes.Contains(content, []byte("begincmap")) {
+		return
+	}
+
+	// 1. Définitions bfchar unitaires (<src> <dst>)
+	for _, block := range rePDFBFCharBlock.FindAll(content, -1) {
+		for _, m := range rePDFBFChar.FindAllSubmatch(block, -1) {
+			src, err := strconv.ParseUint(string(m[1]), 16, 32)
+			if err != nil {
+				continue
+			}
+			dst := decodeHexUTF16(string(m[2]))
+			if dst != "" {
+				cmap[uint32(src)] = dst
+			}
+		}
+	}
+
+	// 2. Définitions bfrange par plage
+	for _, block := range rePDFBFRangeBlock.FindAll(content, -1) {
+		// Forme avec tableau : <start> <end> [ <dst1> <dst2> ... ]
+		for _, m := range rePDFBFRangeArray.FindAllSubmatch(block, -1) {
+			start, err1 := strconv.ParseUint(string(m[1]), 16, 32)
+			end, err2 := strconv.ParseUint(string(m[2]), 16, 32)
+			if err1 != nil || err2 != nil || start > end || end-start > 65535 {
+				continue
+			}
+			dstTokens := rePDFHexToken.FindAllSubmatch(m[3], -1)
+			for idx, code := 0, start; code <= end && idx < len(dstTokens); idx, code = idx+1, code+1 {
+				dst := decodeHexUTF16(string(dstTokens[idx][1]))
+				if dst != "" {
+					cmap[uint32(code)] = dst
+				}
+			}
+		}
+
+		// Forme séquentielle : <start> <end> <dstStart>
+		for _, m := range rePDFBFRange.FindAllSubmatch(block, -1) {
+			start, err1 := strconv.ParseUint(string(m[1]), 16, 32)
+			end, err2 := strconv.ParseUint(string(m[2]), 16, 32)
+			dstStart, err3 := strconv.ParseUint(string(m[3]), 16, 32)
+			if err1 != nil || err2 != nil || err3 != nil || start > end || end-start > 65535 {
+				continue
+			}
+			for code := start; code <= end; code++ {
+				cmap[uint32(code)] = string(rune(dstStart + (code - start)))
+			}
+		}
+	}
 }
 
 // extractPrintableWords récupère les suites de caractères imprimables d'un binaire.
