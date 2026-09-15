@@ -1220,6 +1220,9 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	totalDuration := time.Since(startTime)
 
 	if err != nil {
+		if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
+			return
+		}
 		log.Printf("Erreur streaming Vertex AI (%s): %v. Fallback synthèse locale.", activeModel, err)
 		// Fallback gracieux en environnement sandbox sans quota Vertex immédiat
 		s.streamLocalFallback(query, chunks, func(token string) {
