@@ -1,0 +1,12 @@
+# Limite le contexte de build aux seules sources nécessaires au binaire.
+.git
+.gitignore
+*.md
+Dockerfile
+.dockerignore
+
+# Artéfacts de build locaux
+rag-chatbot
+main
+*.test
+*.out

@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+<html lang="fr" class="h-full bg-slate-950 text-slate-100">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GCP AI Foundation — RAG vs Classic Search Demo</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    @keyframes pulse-slow { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .animate-pulse-slow { animation: pulse-slow 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+  </style>
+</head>
+<body class="h-full flex flex-col font-sans antialiased overflow-hidden">
+
+  <!-- Header Démo Client -->
+  <header class="h-16 border-b border-slate-800 bg-slate-900/80 backdrop-blur px-6 flex items-center justify-between z-10">
+    <div class="flex items-center space-x-3">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 via-indigo-500 to-cyan-400 flex items-center justify-center shadow-lg shadow-blue-500/20">
+        <i class="fa-solid fa-brain text-white text-lg"></i>
+      </div>
+      <div>
+        <div class="flex items-center space-x-2">
+          <h1 class="font-bold text-base tracking-wide text-white">GCP AI Foundation</h1>
+          <span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">Elevate & Spark</span>
+        </div>
+        <p class="text-xs text-slate-400">Démonstrateur RAG Grounding vs Recherche Classique</p>
+      </div>
+    </div>
+
+    <!-- Mode Switcher : Vue RAG / RAG vs Search / Comparateur de Modèles / Triple Comparatif -->
+    <div class="flex items-center space-x-1.5 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
+      <button id="btn-mode-rag" onclick="setMode('rag')" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-blue-600 text-white shadow-sm flex items-center space-x-1.5">
+        <i class="fa-solid fa-wand-magic-sparkles text-cyan-300"></i>
+        <span>Vue RAG</span>
+      </button>
+      <button id="btn-mode-split" onclick="setMode('split')" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 text-slate-400 hover:text-white flex items-center space-x-1.5">
+        <i class="fa-solid fa-columns"></i>
+        <span>RAG vs Recherche</span>
+      </button>
+      <button id="btn-mode-models" onclick="setMode('models')" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 text-slate-400 hover:text-white flex items-center space-x-1.5">
+        <i class="fa-solid fa-scale-balanced text-purple-400"></i>
+        <span>Arena Modèles</span>
+      </button>
+      <button id="btn-mode-triple" onclick="setMode('triple')" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 text-slate-400 hover:text-white flex items-center space-x-1.5">
+        <i class="fa-solid fa-table-columns text-emerald-400"></i>
+        <span>RAG 1 / RAG 2 / Recherche</span>
+      </button>
+    </div>
+
+    <!-- Sélecteurs de Modèles Gemini 3 -->
+    <div class="flex items-center space-x-2">
+      <!-- Modèle A (Principal / Défaut) -->
+      <div class="flex items-center space-x-1.5 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800">
+        <i class="fa-solid fa-microchip text-indigo-400 text-xs"></i>
+        <label id="label-model-a" for="model-selector" class="text-[11px] text-slate-400 font-medium">Modèle :</label>
+        <select id="model-selector" onchange="onModelChange(this.value)" class="bg-transparent text-xs text-indigo-300 font-semibold focus:outline-none cursor-pointer">
+          <option value="gemini-3.5-flash" class="bg-slate-900 text-slate-100">Gemini 3.5 Flash (Défaut)</option>
+          <option value="gemini-3.8-flash" class="bg-slate-900 text-slate-100">Gemini 3.8 Flash (Agentic)</option>
+          <option value="gemini-3.1-pro-preview" class="bg-slate-900 text-slate-100">Gemini 3.1 Pro (Frontier)</option>
+          <option value="gemini-3.5-flash-lite" class="bg-slate-900 text-slate-100">Gemini 3.5 Flash-Lite (Fast)</option>
+          <option value="gemini-3.7-flash" class="bg-slate-900 text-slate-100">Gemini 3.7 Flash</option>
+          <option value="gemini-2.5-flash" class="bg-slate-900 text-slate-100">Gemini 2.5 Flash (Legacy)</option>
+        </select>
+      </div>
+
+      <!-- Modèle B (Affiché uniquement en mode Comparateur de Modèles) -->
+      <div id="model-b-container" class="hidden flex items-center space-x-1.5 bg-slate-950 px-3 py-1.5 rounded-xl border border-purple-900/60 bg-purple-950/20">
+        <span class="text-[11px] font-bold text-purple-400">VS</span>
+        <select id="model-b-selector" class="bg-transparent text-xs text-purple-300 font-semibold focus:outline-none cursor-pointer">
+          <option value="gemini-3.8-flash" class="bg-slate-900 text-slate-100">Gemini 3.8 Flash (Agentic)</option>
+          <option value="gemini-3.1-pro-preview" class="bg-slate-900 text-slate-100">Gemini 3.1 Pro (Frontier)</option>
+          <option value="gemini-3.5-flash" class="bg-slate-900 text-slate-100">Gemini 3.5 Flash</option>
+          <option value="gemini-3.5-flash-lite" class="bg-slate-900 text-slate-100">Gemini 3.5 Flash-Lite (Fast)</option>
+          <option value="gemini-3.7-flash" class="bg-slate-900 text-slate-100">Gemini 3.7 Flash</option>
+          <option value="gemini-2.5-flash" class="bg-slate-900 text-slate-100">Gemini 2.5 Flash (Legacy)</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Badges Statut Infra -->
+    <div class="hidden md:flex items-center space-x-3 text-xs">
+      <span class="flex items-center space-x-1.5 text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span>Vertex AI Connecté</span>
+      </span>
+      <span class="text-slate-400 border border-slate-800 bg-slate-950 px-2.5 py-1 rounded-full">
+        <i class="fa-solid fa-shield-halved text-blue-400 mr-1"></i> Cloud Armor WAF Actif
+      </span>
+    </div>
+  </header>
+
+  <!-- Main Layout : Panneau Latéral (Docs) + Espace Conversationnel -->
+  <div class="flex-1 flex overflow-hidden">
+
+    <!-- Panneau Latéral : Gestion de la Documentation -->
+    <aside class="w-80 border-r border-slate-800 bg-slate-900/50 flex flex-col p-4 custom-scrollbar overflow-y-auto">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-2">
+          <i class="fa-solid fa-database text-blue-400"></i>
+          <span>Corpus Documentaire</span>
+        </h2>
+        <span id="doc-count" class="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">3 docs</span>
+      </div>
+
+      <!-- Zone d'Upload Rapide (Drag & Drop / Input) -->
+      <div class="border-2 border-dashed border-slate-800 hover:border-blue-500/50 rounded-xl p-3 text-center transition-colors bg-slate-950/50 mb-4 cursor-pointer" onclick="openUploadModal()">
+        <i class="fa-solid fa-cloud-arrow-up text-xl text-blue-400 mb-1"></i>
+        <p class="text-xs font-medium text-slate-200">Ajouter un document à la volée</p>
+        <p class="text-[10px] text-slate-500">PDF, TXT, DOCX ou URL Web</p>
+      </div>
+
+      <!-- Liste des Documents Indexés -->
+      <div class="space-y-2.5 flex-1" id="doc-list">
+        <!-- Rempli dynamiquement par JS -->
+      </div>
+
+      <div class="pt-4 border-t border-slate-800/80 text-[11px] text-slate-500 flex items-center justify-between">
+        <span>Bucket : <code class="text-slate-400">gs://...-rag-docs</code></span>
+        <i class="fa-solid fa-lock text-emerald-500" title="UBLA & Versioning activés"></i>
+      </div>
+    </aside>
+
+    <!-- Zone Chat & Démonstration -->
+    <main class="flex-1 flex flex-col bg-slate-950">
+      
+      <!-- Conteneur Messages (Simple ou Split View) -->
+      <div id="messages-container" class="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+        <!-- Message de bienvenue -->
+        <div class="flex items-start space-x-3 max-w-2xl">
+          <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center flex-shrink-0 text-white text-sm">
+            <i class="fa-solid fa-robot"></i>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-2xl rounded-tl-none p-4 text-sm text-slate-200 shadow-sm leading-relaxed">
+            👋 Bonjour ! Je suis votre assistant groundé sur la documentation de votre architecture Google Cloud.
+            <br><br>
+            Posez une question technique (ex: <em>"Comment est gérée la sécurité WAF ?"</em> ou <em>"Quels sont les seuils FinOps ?"</em>).
+            <div class="mt-3 pt-3 border-t border-slate-800 text-xs text-slate-400 space-y-1">
+              <p>💡 <strong>4 modes de démonstration disponibles dans la barre d'en-tête :</strong></p>
+              <ul class="list-disc list-inside space-y-0.5 text-slate-300">
+                <li><strong>Vue RAG</strong> : Synthèse sourcée avec le modèle actif & métriques télémétriques.</li>
+                <li><strong>RAG vs Recherche</strong> : Comparatif côte à côte avec une recherche par mots-clés traditionnelle.</li>
+                <li><strong>Arena Modèles</strong> : Évaluez en direct deux modèles (ex: <em>Gemini 3.5 Flash</em> vs <em>Gemini 3.8 Flash</em> ou <em>Gemini 3.1 Pro</em>) avec benchmarks de latence (TTFT), durée totale et consommation de tokens.</li>
+                <li><strong>RAG 1 / RAG 2 / Recherche</strong> : Vue 3 colonnes pour comparer simultanément deux modèles GenAI face à la recherche traditionnelle sans IA.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Zone de Saisie Utilisateur -->
+      <div class="p-4 border-t border-slate-800/80 bg-slate-900/40">
+        <form id="chat-form" onsubmit="handleUserSubmit(event)" class="max-w-4xl mx-auto flex items-center space-x-2">
+          <div class="relative flex-1">
+            <input type="text" id="user-input" placeholder="Posez une question sur le corpus documentaire..." class="w-full bg-slate-900 border border-slate-700/80 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 outline-none transition-all pr-10" autocomplete="off" required>
+            <button type="button" onclick="suggestQuestion('Quelles sont les règles WAF et les seuils de budget FinOps ?')" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-cyan-400 text-xs" title="Question exemple">
+              <i class="fa-regular fa-lightbulb"></i>
+            </button>
+          </div>
+          <button type="submit" id="btn-submit" class="bg-blue-600 hover:bg-blue-500 text-white px-5 py-3 rounded-xl font-medium text-sm flex items-center space-x-2 transition-colors shadow-lg shadow-blue-600/20 disabled:opacity-50">
+            <span>Envoyer</span>
+            <i class="fa-solid fa-paper-plane text-xs"></i>
+          </button>
+        </form>
+      </div>
+
+    </main>
+
+  </div>
+
+  <!-- Modal d'Upload Rapide (Fichier ou Texte/URL) -->
+  <div id="upload-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between">
+        <h3 class="font-bold text-white text-base flex items-center space-x-2">
+          <i class="fa-solid fa-cloud-arrow-up text-blue-400"></i>
+          <span>Ajouter au Corpus Documentaire</span>
+        </h3>
+        <button onclick="closeUploadModal()" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+
+      <!-- Onglets : Fichier local vs Texte/URL -->
+      <div class="flex border-b border-slate-800 text-xs font-semibold">
+        <button id="tab-file" onclick="switchUploadTab('file')" class="pb-2 px-3 border-b-2 border-blue-500 text-blue-400">Sélectionner un Fichier</button>
+        <button id="tab-text" onclick="switchUploadTab('text')" class="pb-2 px-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200">Coller un Texte / URL</button>
+      </div>
+
+      <!-- Formulaire 1 : Fichiers locaux via sélecteur (support multi-sélection) -->
+      <div id="form-file-mode" class="space-y-3">
+        <div class="border-2 border-dashed border-slate-700/80 hover:border-blue-500 rounded-xl p-5 text-center bg-slate-950/60 cursor-pointer" onclick="document.getElementById('file-picker').click()">
+          <i class="fa-solid fa-file-arrow-up text-2xl text-blue-400 mb-2"></i>
+          <p class="text-xs font-medium text-slate-200" id="file-picker-label">Cliquez pour choisir un ou plusieurs fichiers</p>
+          <p class="text-[10px] text-slate-500 mt-1">PDF, TXT, Markdown, CSV, DOCX (Sélection multiple autorisée - Max 50 Mo)</p>
+          <input type="file" id="file-picker" onchange="handleFileSelect(event)" class="hidden" multiple accept=".txt,.md,.pdf,.csv,.doc,.docx,.json">
+        </div>
+        <div id="file-preview-info" class="hidden p-2.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-300 space-y-1.5 max-h-36 overflow-y-auto custom-scrollbar">
+        </div>
+      </div>
+
+      <!-- Formulaire 2 : Texte ou URL manuelle -->
+      <div id="form-text-mode" class="hidden space-y-3">
+        <div>
+          <label class="text-xs font-semibold text-slate-300 block mb-1">Titre du document</label>
+          <input type="text" id="modal-title" placeholder="Ex: Spécifications Cloud Spanner" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-blue-500">
+        </div>
+        <div>
+          <label class="text-xs font-semibold text-slate-300 block mb-1">Source (GCS URI ou URL)</label>
+          <input type="text" id="modal-source" placeholder="gs://mon-bucket/spec.pdf ou https://..." class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-blue-500">
+        </div>
+        <div>
+          <label class="text-xs font-semibold text-slate-300 block mb-1">Contenu texte à indexer</label>
+          <textarea id="modal-content" rows="4" placeholder="Collez le texte du document ici..." class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-blue-500 custom-scrollbar"></textarea>
+        </div>
+      </div>
+
+      <div class="flex justify-end space-x-2 pt-2 border-t border-slate-800/80">
+        <button onclick="closeUploadModal()" class="px-4 py-2 text-xs font-medium text-slate-400 hover:text-white">Annuler</button>
+        <button id="btn-submit-upload" onclick="submitUpload()" class="px-4 py-2 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg flex items-center space-x-1.5 shadow-lg shadow-blue-600/20">
+          <i class="fa-solid fa-cloud-arrow-up text-xs"></i>
+          <span>Indexer dans le Corpus</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentMode = 'rag'; // 'rag', 'split', 'models' ou 'triple'
+    let selectedModel = 'gemini-3.5-flash';
+    let availableModelsList = [];
+
+    // Doit rester aligné sur maxUploadBytes dans main.go.
+    const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+    /**
+     * Échappe une valeur avant son insertion dans du HTML.
+     *
+     * Les titres de documents proviennent des noms de fichiers uploadés, donc
+     * intégralement du client : les interpoler tels quels dans un template
+     * permettrait d'injecter du script exécuté chez tous les visiteurs suivants.
+     */
+    const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    })[c]);
+
+
+    function setMode(mode) {
+      currentMode = mode;
+      const btnRag = document.getElementById('btn-mode-rag');
+      const btnSplit = document.getElementById('btn-mode-split');
+      const btnModels = document.getElementById('btn-mode-models');
+      const btnTriple = document.getElementById('btn-mode-triple');
+      const modelBContainer = document.getElementById('model-b-container');
+      const labelModelA = document.getElementById('label-model-a');
+
+      const activeClass = 'px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-blue-600 text-white shadow-sm flex items-center space-x-1.5';
+      const inactiveClass = 'px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 text-slate-400 hover:text-white flex items-center space-x-1.5';
+
+      btnRag.className = mode === 'rag' ? activeClass : inactiveClass;
+      btnSplit.className = mode === 'split' ? activeClass : inactiveClass;
+      btnModels.className = mode === 'models' ? 'px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-purple-600 text-white shadow-sm flex items-center space-x-1.5' : inactiveClass;
+      btnTriple.className = mode === 'triple' ? 'px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-emerald-600 text-white shadow-sm flex items-center space-x-1.5' : inactiveClass;
+
+      if (mode === 'models' || mode === 'triple') {
+        modelBContainer.classList.remove('hidden');
+        labelModelA.innerText = "Modèle 1 :";
+      } else {
+        modelBContainer.classList.add('hidden');
+        labelModelA.innerText = "Modèle :";
+      }
+    }
+
+    async function loadModels() {
+      try {
+        const res = await fetch('/api/models');
+        const data = await res.json();
+        const selectorA = document.getElementById('model-selector');
+        const selectorB = document.getElementById('model-b-selector');
+        if (data.models && data.models.length > 0) {
+          availableModelsList = data.models;
+          const optionsHtml = data.models.map(m => `
+            <option value="${m.id}" class="bg-slate-900 text-slate-100">
+              ${m.name} (${m.category})
+            </option>
+          `).join('');
+
+          selectorA.innerHTML = optionsHtml;
+          selectorB.innerHTML = optionsHtml;
+
+          selectorA.value = data.current || "gemini-3.5-flash";
+          selectedModel = selectorA.value;
+
+          // Sélectionner par défaut gemini-3.8-flash ou gemini-3.1-pro pour le modèle B
+          if (selectorB.querySelector('option[value="gemini-3.8-flash"]')) {
+            selectorB.value = "gemini-3.8-flash";
+          } else if (data.models.length > 1) {
+            selectorB.value = data.models[1].id;
+          }
+        }
+      } catch (err) {
+        console.warn('Impossible de charger les modèles dynamiques:', err);
+      }
+    }
+
+    async function onModelChange(modelId) {
+      selectedModel = modelId;
+      try {
+        await fetch('/api/model/switch', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({model: modelId})
+        });
+      } catch (err) {
+        console.warn('Erreur lors du changement de modèle:', err);
+      }
+    }
+
+    async function loadDocuments() {
+      const res = await fetch('/api/documents');
+      const docs = await res.json();
+      const listEl = document.getElementById('doc-list');
+      document.getElementById('doc-count').innerText = `${docs.length} docs`;
+      
+      listEl.innerHTML = docs.map(d => `
+        <div class="p-3 bg-slate-950/80 border border-slate-800 rounded-xl hover:border-slate-700 transition-all text-xs">
+          <div class="flex items-start justify-between gap-2 mb-1">
+            <h4 class="font-semibold text-slate-200 truncate" title="${esc(d.title)}">${esc(d.title)}</h4>
+            <span class="flex-shrink-0 text-[10px] px-2 py-0.5 rounded-full ${d.status === 'ready' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse'}">
+              ${d.status === 'ready' ? 'Indexé' : 'Indexation...'}
+            </span>
+          </div>
+          <p class="text-[11px] text-slate-500 truncate mb-1.5">${esc(d.source)}</p>
+          <p class="text-[11px] text-slate-400 line-clamp-2">${esc(d.snippet)}</p>
+        </div>
+      `).join('');
+    }
+
+    function openUploadModal() {
+      document.getElementById('upload-modal').classList.remove('hidden');
+      document.getElementById('upload-modal').classList.add('flex');
+    }
+
+    function closeUploadModal() {
+      document.getElementById('upload-modal').classList.add('hidden');
+      document.getElementById('upload-modal').classList.remove('flex');
+    }
+
+    let activeUploadTab = 'file';
+    let selectedFiles = [];
+
+    function switchUploadTab(tab) {
+      activeUploadTab = tab;
+      const tabFile = document.getElementById('tab-file');
+      const tabText = document.getElementById('tab-text');
+      const formFile = document.getElementById('form-file-mode');
+      const formText = document.getElementById('form-text-mode');
+
+      if (tab === 'file') {
+        tabFile.className = 'pb-2 px-3 border-b-2 border-blue-500 text-blue-400';
+        tabText.className = 'pb-2 px-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200';
+        formFile.classList.remove('hidden');
+        formText.classList.add('hidden');
+      } else {
+        tabText.className = 'pb-2 px-3 border-b-2 border-blue-500 text-blue-400';
+        tabFile.className = 'pb-2 px-3 border-b-2 border-transparent text-slate-400 hover:text-slate-200';
+        formText.classList.remove('hidden');
+        formFile.classList.add('hidden');
+      }
+    }
+
+    function handleFileSelect(e) {
+      const files = Array.from(e.target.files || []);
+      if (files.length === 0) return;
+
+      selectedFiles = files;
+      const previewEl = document.getElementById('file-preview-info');
+      const labelEl = document.getElementById('file-picker-label');
+
+      if (files.length === 1) {
+        labelEl.innerText = "1 fichier sélectionné : " + files[0].name;
+      } else {
+        labelEl.innerText = `${files.length} fichiers sélectionnés`;
+      }
+
+      previewEl.innerHTML = files.map((file, idx) => {
+        const sizeStr = file.size < 1024 * 1024 
+          ? (file.size / 1024).toFixed(1) + " Ko" 
+          : (file.size / (1024 * 1024)).toFixed(2) + " Mo";
+        return `
+          <div class="flex items-center justify-between p-1.5 rounded bg-slate-900 border border-slate-800">
+            <div class="flex items-center space-x-2 truncate">
+              <i class="fa-solid fa-file-lines text-cyan-400 text-xs"></i>
+              <span class="truncate font-medium">${esc(file.name)}</span>
+            </div>
+            <span class="text-[10px] text-slate-500 flex-shrink-0 ml-2 font-mono">${sizeStr}</span>
+          </div>
+        `;
+      }).join('');
+      previewEl.classList.remove('hidden');
+    }
+
+    async function submitUpload() {
+      const btn = document.getElementById('btn-submit-upload');
+      btn.disabled = true;
+      btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> <span>Indexation...</span>`;
+
+      try {
+        if (activeUploadTab === 'file') {
+          if (!selectedFiles || selectedFiles.length === 0) {
+            alert('Veuillez sélectionner au moins un fichier');
+            btn.disabled = false;
+            btn.innerHTML = `<i class="fa-solid fa-cloud-arrow-up text-xs"></i> <span>Indexer dans le Corpus</span>`;
+            return;
+          }
+
+          // La limite est appliquée côté serveur : la vérifier ici évite de
+          // téléverser plusieurs dizaines de Mo pour recevoir un refus.
+          const totalBytes = selectedFiles.reduce((sum, f) => sum + f.size, 0);
+          if (totalBytes > MAX_UPLOAD_BYTES) {
+            alert(`Taille totale trop importante : ${(totalBytes / (1024 * 1024)).toFixed(1)} Mo pour une limite de 50 Mo.`);
+            btn.disabled = false;
+            btn.innerHTML = `<i class="fa-solid fa-cloud-arrow-up text-xs"></i> <span>Indexer dans le Corpus</span>`;
+            return;
+          }
+
+          const formData = new FormData();
+          for (const file of selectedFiles) {
+            formData.append('file', file);
+          }
+
+          const res = await fetch('/api/documents/upload', {
+            method: 'POST',
+            body: formData
+          });
+
+          if (!res.ok) {
+            const errTxt = await res.text();
+            throw new Error('Erreur lors de l\'upload : ' + (errTxt || res.statusText));
+          }
+        } else {
+          const title = document.getElementById('modal-title').value;
+          const source = document.getElementById('modal-source').value;
+          const content = document.getElementById('modal-content').value;
+
+          if (!title || !content) {
+            alert('Titre et contenu requis');
+            btn.disabled = false;
+            btn.innerHTML = `<i class="fa-solid fa-cloud-arrow-up text-xs"></i> <span>Indexer dans le Corpus</span>`;
+            return;
+          }
+
+          const res = await fetch('/api/documents/upload', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({title, source: source || 'gs://user-upload/doc.txt', content})
+          });
+
+          if (!res.ok) throw new Error('Erreur lors de l\'envoi du document');
+        }
+
+        closeUploadModal();
+        selectedFiles = [];
+        document.getElementById('file-picker').value = '';
+        document.getElementById('file-preview-info').innerHTML = '';
+        document.getElementById('file-preview-info').classList.add('hidden');
+        document.getElementById('file-picker-label').innerText = "Cliquez pour choisir un ou plusieurs fichiers";
+        loadDocuments();
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = `<i class="fa-solid fa-cloud-arrow-up text-xs"></i> <span>Indexer dans le Corpus</span>`;
+      }
+    }
+
+    function suggestQuestion(q) {
+      document.getElementById('user-input').value = q;
+      document.getElementById('user-input').focus();
+    }
+
+    async function handleUserSubmit(e) {
+      e.preventDefault();
+      const input = document.getElementById('user-input');
+      const query = input.value.trim();
+      if (!query) return;
+
+      input.value = '';
+      appendUserMessage(query);
+
+      if (currentMode === 'triple') {
+        renderTripleComparison(query);
+      } else if (currentMode === 'models') {
+        renderModelsComparison(query);
+      } else if (currentMode === 'split') {
+        renderSplitResponse(query);
+      } else {
+        renderRAGResponse(query);
+      }
+    }
+
+    function appendUserMessage(text) {
+      const c = document.getElementById('messages-container');
+      const div = document.createElement('div');
+      div.className = 'flex justify-end';
+      div.innerHTML = `
+        <div class="bg-blue-600 text-white rounded-2xl rounded-tr-none px-4 py-3 text-sm max-w-xl shadow-md">
+          ${esc(text)}
+        </div>
+      `;
+      c.appendChild(div);
+      c.scrollTop = c.scrollHeight;
+    }
+
+    function getModelName(id) {
+      const m = availableModelsList.find(item => item.id === id);
+      return m ? m.name : id;
+    }
+
+    async function renderRAGResponse(query) {
+      const c = document.getElementById('messages-container');
+      const resDiv = document.createElement('div');
+      resDiv.className = 'flex items-start space-x-3 max-w-3xl';
+      
+      const contentId = 'rag-' + Date.now();
+      const modelDisplayName = getModelName(selectedModel);
+
+      resDiv.innerHTML = `
+        <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center flex-shrink-0 text-white text-sm">
+          <i class="fa-solid fa-wand-magic-sparkles text-cyan-300"></i>
+        </div>
+        <div class="flex-1 bg-slate-900 border border-slate-800 rounded-2xl rounded-tl-none p-4 text-sm text-slate-200 shadow-sm space-y-3">
+          <div class="flex items-center justify-between pb-2 border-b border-slate-800/80">
+            <span class="text-xs font-bold text-cyan-400 flex items-center space-x-1.5">
+              <i class="fa-solid fa-brain text-xs"></i>
+              <span>Synthèse RAG (${modelDisplayName})</span>
+            </span>
+            <span id="telemetry-${contentId}" class="text-[10px] text-slate-500 font-mono"></span>
+          </div>
+          <div id="status-${contentId}" class="text-xs text-cyan-400 flex items-center space-x-2 animate-pulse">
+            <i class="fa-solid fa-circle-notch fa-spin"></i>
+            <span>Consultation du corpus documentaire...</span>
+          </div>
+          <div id="retrieval-${contentId}" class="hidden flex-wrap gap-2 text-xs"></div>
+          <div id="${contentId}" class="leading-relaxed whitespace-pre-wrap font-normal"></div>
+        </div>
+      `;
+      c.appendChild(resDiv);
+      c.scrollTop = c.scrollHeight;
+
+      const eventSource = new EventSource(`/api/chat/stream?q=${encodeURIComponent(query)}&model=${encodeURIComponent(selectedModel)}`);
+      const textEl = document.getElementById(contentId);
+      const statusEl = document.getElementById(`status-${contentId}`);
+      const retrievalEl = document.getElementById(`retrieval-${contentId}`);
+      const telemetryEl = document.getElementById(`telemetry-${contentId}`);
+
+      eventSource.addEventListener('status', (e) => {
+        const d = JSON.parse(e.data);
+        statusEl.innerHTML = `<i class="fa-solid fa-check text-emerald-400"></i> <span>${d.message}</span>`;
+      });
+
+      eventSource.addEventListener('retrieval', (e) => {
+        const chunks = JSON.parse(e.data);
+        retrievalEl.classList.remove('hidden');
+        retrievalEl.innerHTML = `
+          <div class="w-full text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
+            <i class="fa-solid fa-search text-blue-400 mr-1"></i> Passages extraits pour le grounding :
+          </div>
+          ${chunks.map(ch => `
+            <span class="inline-flex items-center px-2 py-1 rounded bg-slate-950 border border-slate-800 text-[11px] text-slate-300">
+              <i class="fa-solid fa-file-lines text-cyan-400 mr-1.5"></i> ${esc(ch.document_title)}
+            </span>
+          `).join('')}
+        `;
+        c.scrollTop = c.scrollHeight;
+      });
+
+      eventSource.addEventListener('token', (e) => {
+        textEl.textContent += JSON.parse(e.data);
+        c.scrollTop = c.scrollHeight;
+      });
+
+      eventSource.addEventListener('metrics', (e) => {
+        const m = JSON.parse(e.data);
+        telemetryEl.innerHTML = `⚡ 1er token: ${m.first_token_ms}ms | Total: ${m.total_duration_ms}ms | ${m.total_tokens} tokens`;
+      });
+
+      eventSource.addEventListener('done', (e) => {
+        statusEl.remove();
+        eventSource.close();
+      });
+
+      // Sans ce handler, EventSource se reconnecte indéfiniment en cas d'erreur
+      // réseau ou de panne Vertex AI, relançant une génération à chaque tentative.
+      eventSource.onerror = () => {
+        eventSource.close();
+        if (statusEl.isConnected) {
+          statusEl.classList.remove('animate-pulse');
+          statusEl.innerHTML = `<i class="fa-solid fa-triangle-exclamation text-amber-400"></i> <span class="text-amber-400">Connexion au modèle interrompue</span>`;
+        }
+      };
+    }
+
+    async function renderSplitResponse(query) {
+      const c = document.getElementById('messages-container');
+      const splitDiv = document.createElement('div');
+      splitDiv.className = 'w-full bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-4';
+      
+      const ragId = 'split-rag-' + Date.now();
+      const classicId = 'split-classic-' + Date.now();
+      const modelDisplayName = getModelName(selectedModel);
+
+      splitDiv.innerHTML = `
+        <div class="flex items-center justify-between pb-3 border-b border-slate-800 text-xs">
+          <span class="font-bold text-slate-200">🔍 Comparatif Avant / Après : "${esc(query)}"</span>
+          <span class="text-slate-400">Recherche Classique vs RAG GenAI</span>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          
+          <!-- Colonne Gauche : Recherche Mots-Clés Classique -->
+          <div class="bg-slate-950 border border-slate-800/80 rounded-xl p-4 space-y-3">
+            <div class="flex items-center space-x-2 text-xs font-bold text-amber-400">
+              <i class="fa-solid fa-magnifying-glass"></i>
+              <span>Recherche Classique (Extraits Bruts)</span>
+            </div>
+            <p class="text-[11px] text-slate-400 italic">Résultats bruts sans compréhension sémantique ni synthèse :</p>
+            <div id="${classicId}" class="space-y-2 text-xs text-slate-300">
+              <i class="fa-solid fa-circle-notch fa-spin text-slate-500"></i>
+            </div>
+          </div>
+
+          <!-- Colonne Droite : RAG Groundé GenAI -->
+          <div class="bg-slate-950 border border-blue-500/30 rounded-xl p-4 space-y-3 shadow-lg shadow-blue-500/5">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center space-x-2 text-xs font-bold text-cyan-400">
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+                <span>RAG Synthétisé (${modelDisplayName})</span>
+              </div>
+              <span id="telemetry-${ragId}" class="text-[10px] text-slate-500 font-mono"></span>
+            </div>
+            <p class="text-[11px] text-slate-400 italic">Compréhension, synthèse et citations contextuelles :</p>
+            <div id="${ragId}" class="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap"></div>
+          </div>
+
+        </div>
+      `;
+      c.appendChild(splitDiv);
+      c.scrollTop = c.scrollHeight;
+
+      // 1. Appel Classic Search
+      fetch(`/api/search/classic?q=${encodeURIComponent(query)}`)
+        .then(r => r.json())
+        .then(data => {
+          const el = document.getElementById(classicId);
+          if (!data.results || data.results.length === 0) {
+            el.innerHTML = '<p class="text-slate-500">Aucun mot-clé direct trouvé.</p>';
+          } else {
+            el.innerHTML = data.results.map(r => `
+              <div class="p-2.5 bg-slate-900 rounded-lg border border-slate-800">
+                <div class="font-semibold text-slate-200 mb-1">${esc(r.document_title)}</div>
+                <div class="text-[11px] text-slate-400">${esc(r.snippet)}</div>
+              </div>
+            `).join('');
+          }
+        });
+
+      // 2. Stream RAG
+      const eventSource = new EventSource(`/api/chat/stream?q=${encodeURIComponent(query)}&model=${encodeURIComponent(selectedModel)}`);
+      const ragEl = document.getElementById(ragId);
+      const telemetryEl = document.getElementById(`telemetry-${ragId}`);
+
+      eventSource.addEventListener('token', (e) => {
+        ragEl.textContent += JSON.parse(e.data);
+        c.scrollTop = c.scrollHeight;
+      });
+
+      eventSource.addEventListener('metrics', (e) => {
+        const m = JSON.parse(e.data);
+        telemetryEl.innerHTML = `⚡ ${m.total_duration_ms}ms | ${m.total_tokens} toks`;
+      });
+
+      eventSource.addEventListener('done', () => eventSource.close());
+
+      eventSource.onerror = () => {
+        eventSource.close();
+        if (!ragEl.textContent) {
+          ragEl.innerHTML = `<span class="text-amber-400">Connexion au modèle interrompue</span>`;
+        }
+      };
+    }
+
+    // 3. Comparateur Multi-Modèles Arena : A vs B simultané
+    async function renderModelsComparison(query) {
+      const c = document.getElementById('messages-container');
+      const modelA = selectedModel;
+      const modelB = document.getElementById('model-b-selector').value;
+
+      const nameA = getModelName(modelA);
+      const nameB = getModelName(modelB);
+
+      const arenaDiv = document.createElement('div');
+      arenaDiv.className = 'w-full bg-slate-900/60 border border-purple-900/40 rounded-2xl p-5 space-y-4 shadow-xl shadow-purple-950/10';
+      
+      const idA = 'arena-a-' + Date.now();
+      const idB = 'arena-b-' + Date.now();
+
+      arenaDiv.innerHTML = `
+        <div class="flex items-center justify-between pb-3 border-b border-slate-800 text-xs">
+          <div class="flex items-center space-x-2">
+            <span class="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 font-bold border border-purple-500/30">
+              <i class="fa-solid fa-scale-balanced mr-1"></i> Arena Modèles
+            </span>
+            <span class="font-bold text-slate-200">"${esc(query)}"</span>
+          </div>
+          <span class="text-slate-400 text-[11px]">Comparaison directe de raisonnement, latence & tokens</span>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+          
+          <!-- Colonne Modèle A -->
+          <div class="bg-slate-950 border border-blue-500/30 rounded-xl p-4 space-y-3 flex flex-col justify-between">
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <div class="flex items-center space-x-2 text-xs font-bold text-blue-400">
+                  <span class="w-5 h-5 rounded-full bg-blue-600/30 border border-blue-500/50 flex items-center justify-center text-[10px]">A</span>
+                  <span>${nameA}</span>
+                </div>
+                <span id="badge-${idA}" class="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 animate-pulse">
+                  Streaming...
+                </span>
+              </div>
+              <div id="${idA}" class="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap min-h-[120px]"></div>
+            </div>
+            
+            <div id="metrics-${idA}" class="pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-2 text-center text-[11px] font-mono text-slate-400">
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[10px] text-slate-500 uppercase">1er Token</div>
+                <div class="font-bold text-slate-200" id="ttft-${idA}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[10px] text-slate-500 uppercase">Durée</div>
+                <div class="font-bold text-slate-200" id="duration-${idA}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[10px] text-slate-500 uppercase">Tokens</div>
+                <div class="font-bold text-slate-200" id="tokens-${idA}">--</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Colonne Modèle B -->
+          <div class="bg-slate-950 border border-purple-500/30 rounded-xl p-4 space-y-3 flex flex-col justify-between">
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <div class="flex items-center space-x-2 text-xs font-bold text-purple-400">
+                  <span class="w-5 h-5 rounded-full bg-purple-600/30 border border-purple-500/50 flex items-center justify-center text-[10px]">B</span>
+                  <span>${nameB}</span>
+                </div>
+                <span id="badge-${idB}" class="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 animate-pulse">
+                  Streaming...
+                </span>
+              </div>
+              <div id="${idB}" class="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap min-h-[120px]"></div>
+            </div>
+
+            <div id="metrics-${idB}" class="pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-2 text-center text-[11px] font-mono text-slate-400">
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[10px] text-slate-500 uppercase">1er Token</div>
+                <div class="font-bold text-slate-200" id="ttft-${idB}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[10px] text-slate-500 uppercase">Durée</div>
+                <div class="font-bold text-slate-200" id="duration-${idB}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[10px] text-slate-500 uppercase">Tokens</div>
+                <div class="font-bold text-slate-200" id="tokens-${idB}">--</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      `;
+      c.appendChild(arenaDiv);
+      c.scrollTop = c.scrollHeight;
+
+      // Lancement simultané des streams pour Modèle A et Modèle B
+      const streamToColumn = (mId, containerId, badgeId, ttftId, durationId, tokensId) => {
+        const textEl = document.getElementById(containerId);
+        const badgeEl = document.getElementById(badgeId);
+        const ttftEl = document.getElementById(ttftId);
+        const durEl = document.getElementById(durationId);
+        const tokEl = document.getElementById(tokensId);
+
+        const es = new EventSource(`/api/chat/stream?q=${encodeURIComponent(query)}&model=${encodeURIComponent(mId)}`);
+
+        es.addEventListener('token', (e) => {
+          textEl.textContent += JSON.parse(e.data);
+          c.scrollTop = c.scrollHeight;
+        });
+
+        es.addEventListener('metrics', (e) => {
+          const m = JSON.parse(e.data);
+          ttftEl.innerText = `${m.first_token_ms}ms`;
+          durEl.innerText = `${m.total_duration_ms}ms`;
+          tokEl.innerText = `${m.total_tokens}`;
+        });
+
+        es.addEventListener('done', () => {
+          badgeEl.className = 'text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+          badgeEl.innerText = 'Terminé';
+          es.close();
+        });
+
+        es.addEventListener('error', () => {
+          badgeEl.className = 'text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20';
+          badgeEl.innerText = 'Repli local';
+          es.close();
+        });
+      };
+
+      streamToColumn(modelA, idA, `badge-${idA}`, `ttft-${idA}`, `duration-${idA}`, `tokens-${idA}`);
+      streamToColumn(modelB, idB, `badge-${idB}`, `ttft-${idB}`, `duration-${idB}`, `tokens-${idB}`);
+    }
+
+    // 4. Comparatif 3 colonnes : RAG Modèle 1 / RAG Modèle 2 / Recherche Classique
+    async function renderTripleComparison(query) {
+      const c = document.getElementById('messages-container');
+      const modelA = selectedModel;
+      const modelB = document.getElementById('model-b-selector').value;
+
+      const nameA = getModelName(modelA);
+      const nameB = getModelName(modelB);
+
+      const tripleDiv = document.createElement('div');
+      tripleDiv.className = 'w-full bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-xl';
+      
+      const idA = 'triple-a-' + Date.now();
+      const idB = 'triple-b-' + Date.now();
+      const idClassic = 'triple-classic-' + Date.now();
+
+      tripleDiv.innerHTML = `
+        <div class="flex items-center justify-between pb-3 border-b border-slate-800 text-xs">
+          <div class="flex items-center space-x-2">
+            <span class="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30">
+              <i class="fa-solid fa-table-columns mr-1"></i> Triple Comparatif
+            </span>
+            <span class="font-bold text-slate-200">"${esc(query)}"</span>
+          </div>
+          <span class="text-slate-400 text-[11px]">RAG Modèle 1 vs RAG Modèle 2 vs Recherche Classique</span>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          
+          <!-- Colonne 1 : RAG Modèle 1 -->
+          <div class="bg-slate-950 border border-blue-500/30 rounded-xl p-4 space-y-3 flex flex-col justify-between shadow-lg shadow-blue-500/5">
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <div class="flex items-center space-x-2 text-xs font-bold text-blue-400">
+                  <span class="w-5 h-5 rounded-full bg-blue-600/30 border border-blue-500/50 flex items-center justify-center text-[10px]">1</span>
+                  <span>RAG ${nameA}</span>
+                </div>
+                <span id="badge-${idA}" class="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 animate-pulse">
+                  Streaming...
+                </span>
+              </div>
+              <div id="${idA}" class="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap min-h-[140px]"></div>
+            </div>
+            
+            <div id="metrics-${idA}" class="pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-1.5 text-center text-[11px] font-mono text-slate-400">
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">1er Token</div>
+                <div class="font-bold text-slate-200 text-xs" id="ttft-${idA}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">Durée</div>
+                <div class="font-bold text-slate-200 text-xs" id="duration-${idA}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">Tokens</div>
+                <div class="font-bold text-slate-200 text-xs" id="tokens-${idA}">--</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Colonne 2 : RAG Modèle 2 -->
+          <div class="bg-slate-950 border border-purple-500/30 rounded-xl p-4 space-y-3 flex flex-col justify-between shadow-lg shadow-purple-500/5">
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <div class="flex items-center space-x-2 text-xs font-bold text-purple-400">
+                  <span class="w-5 h-5 rounded-full bg-purple-600/30 border border-purple-500/50 flex items-center justify-center text-[10px]">2</span>
+                  <span>RAG ${nameB}</span>
+                </div>
+                <span id="badge-${idB}" class="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 animate-pulse">
+                  Streaming...
+                </span>
+              </div>
+              <div id="${idB}" class="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap min-h-[140px]"></div>
+            </div>
+
+            <div id="metrics-${idB}" class="pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-1.5 text-center text-[11px] font-mono text-slate-400">
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">1er Token</div>
+                <div class="font-bold text-slate-200 text-xs" id="ttft-${idB}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">Durée</div>
+                <div class="font-bold text-slate-200 text-xs" id="duration-${idB}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">Tokens</div>
+                <div class="font-bold text-slate-200 text-xs" id="tokens-${idB}">--</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Colonne 3 : Recherche Classique -->
+          <div class="bg-slate-950 border border-amber-500/30 rounded-xl p-4 space-y-3 flex flex-col justify-between shadow-lg shadow-amber-500/5">
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <div class="flex items-center space-x-2 text-xs font-bold text-amber-400">
+                  <span class="w-5 h-5 rounded-full bg-amber-600/30 border border-amber-500/50 flex items-center justify-center text-[10px]">
+                    <i class="fa-solid fa-magnifying-glass text-[9px]"></i>
+                  </span>
+                  <span>Recherche Mots-Clés</span>
+                </div>
+                <span id="badge-${idClassic}" class="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                  Sans IA
+                </span>
+              </div>
+              <p class="text-[11px] text-slate-400 italic mb-2">Extraits documentaires bruts sans compréhension sémantique :</p>
+              <div id="${idClassic}" class="space-y-2 text-xs text-slate-300 min-h-[140px]">
+                <i class="fa-solid fa-circle-notch fa-spin text-slate-500"></i>
+              </div>
+            </div>
+
+            <div class="pt-3 border-t border-slate-800/80 text-[10px] text-slate-500 text-center">
+              Indexation lexicale directe (Keyword Matching)
+            </div>
+          </div>
+
+        </div>
+      `;
+      c.appendChild(tripleDiv);
+      c.scrollTop = c.scrollHeight;
+
+      // 1. Fetch Recherche Classique
+      fetch(`/api/search/classic?q=${encodeURIComponent(query)}`)
+        .then(r => r.json())
+        .then(data => {
+          const el = document.getElementById(idClassic);
+          if (!data.results || data.results.length === 0) {
+            el.innerHTML = '<p class="text-slate-500">Aucun mot-clé direct trouvé.</p>';
+          } else {
+            el.innerHTML = data.results.map(r => `
+              <div class="p-2.5 bg-slate-900 rounded-lg border border-slate-800">
+                <div class="font-semibold text-slate-200 mb-0.5">${esc(r.document_title)}</div>
+                <div class="text-[11px] text-slate-400">${esc(r.snippet)}</div>
+              </div>
+            `).join('');
+          }
+        });
+
+      // 2. Streams Modèle 1 & Modèle 2
+      const streamToColumn = (mId, containerId, badgeId, ttftId, durationId, tokensId) => {
+        const textEl = document.getElementById(containerId);
+        const badgeEl = document.getElementById(badgeId);
+        const ttftEl = document.getElementById(ttftId);
+        const durEl = document.getElementById(durationId);
+        const tokEl = document.getElementById(tokensId);
+
+        const es = new EventSource(`/api/chat/stream?q=${encodeURIComponent(query)}&model=${encodeURIComponent(mId)}`);
+
+        es.addEventListener('token', (e) => {
+          textEl.textContent += JSON.parse(e.data);
+          c.scrollTop = c.scrollHeight;
+        });
+
+        es.addEventListener('metrics', (e) => {
+          const m = JSON.parse(e.data);
+          ttftEl.innerText = `${m.first_token_ms}ms`;
+          durEl.innerText = `${m.total_duration_ms}ms`;
+          tokEl.innerText = `${m.total_tokens}`;
+        });
+
+        es.addEventListener('done', () => {
+          badgeEl.className = 'text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+          badgeEl.innerText = 'Terminé';
+          es.close();
+        });
+
+        es.addEventListener('error', () => {
+          badgeEl.className = 'text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20';
+          badgeEl.innerText = 'Repli local';
+          es.close();
+        });
+      };
+
+      streamToColumn(modelA, idA, `badge-${idA}`, `ttft-${idA}`, `duration-${idA}`, `tokens-${idA}`);
+      streamToColumn(modelB, idB, `badge-${idB}`, `ttft-${idB}`, `duration-${idB}`, `tokens-${idB}`);
+    }
+
+    // Chargement initial
+    loadModels();
+    loadDocuments();
+  </script>
+</body>
+</html>

@@ -1,20 +1,110 @@
-name: CI
+name: CI & Build Test
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main]
   pull_request:
-    branches: [ main, master ]
+    branches: [main]
+  # govulncheck est évalué contre une base de vulnérabilités qui évolue en
+  # continu : le job peut donc passer au rouge sans aucun changement de code.
+  # Un run hebdomadaire fait remonter cette dérive de lui-même, plutôt que de la
+  # faire découvrir par la première PR sans rapport qui viendra ensuite.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
+permissions:
+  contents: read
+
+# Garde-fou repris de la CI standard de l'organisation : un nouveau push sur une
+# branche annule le run précédent encore en cours, qui porte de toute façon sur
+# un code périmé. Évite d'accumuler des exécutions concurrentes inutiles.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
+    name: Test & Build Go Application
+    runs-on: ubuntu-latest
+    # Plafond repris de la CI standard de l'organisation : borne le coût d'un job
+    # qui partirait en boucle plutôt que de le laisser courir jusqu'à la limite
+    # par défaut de GitHub (6 heures).
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # La version est lue depuis go.mod plutôt que dupliquée ici. C'est le
+          # plancher déclaré qui est réellement compilé et scanné : si une faille
+          # stdlib le rend obsolète, la CI passe au rouge et force sa mise à jour,
+          # au lieu de laisser go.mod annoncer une version devenue vulnérable.
+          go-version-file: src/go.mod
+          cache: false
+
+      - name: Verify formatting
+        run: |
+          cd src
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Fichiers non formatés :"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: |
+          cd src
+          go vet ./...
+
+      - name: Run unit tests
+        run: |
+          cd src
+          go test -race -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out | tail -1
+
+      - name: Build Go binary
+        run: |
+          cd src
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o rag-chatbot .
+
+  security:
+    name: Static Analysis & Vulnerability Scan
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - name: Build & Test
-        run: echo "Repository initialized with 15m timeout and concurrency cancellation guardrails."
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # La version est lue depuis go.mod plutôt que dupliquée ici. C'est le
+          # plancher déclaré qui est réellement compilé et scanné : si une faille
+          # stdlib le rend obsolète, la CI passe au rouge et force sa mise à jour,
+          # au lieu de laisser go.mod annoncer une version devenue vulnérable.
+          go-version-file: src/go.mod
+          cache: false
+
+      # govulncheck croise les dépendances et la stdlib avec la base de
+      # vulnérabilités Go, en ne signalant que les failles réellement atteignables.
+      #
+      # `go install ...@latest` s'exécute hors module : ces outils exigent un
+      # toolchain plus récent que le plancher de l'application, que Go télécharge
+      # alors automatiquement (« switching to goX.Y.Z » dans les logs). Ce
+      # basculement ne concerne que la compilation de l'outil : l'analyse, elle,
+      # est bien menée sur le toolchain déclaré par src/go.mod.
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          cd src
+          govulncheck ./...
+
+      - name: Run staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          cd src
+          staticcheck ./...
