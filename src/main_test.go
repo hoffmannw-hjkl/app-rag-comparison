@@ -1369,4 +1369,3 @@ func TestHandleEvaluateValidation(t *testing.T) {
 		t.Errorf("code payload vide = %d, attendu 400", wEmpty.Code)
 	}
 }
-
