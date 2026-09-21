@@ -1,0 +1,12 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rag-comparison-pdb
+  namespace: default
+  labels:
+    app: rag-comparison-demo
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: rag-comparison-demo
