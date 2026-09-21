@@ -63,6 +63,7 @@ gcloud container clusters get-credentials "${GKE_CLUSTER}" --region "${GKE_REGIO
 
 # Préparation du manifest avec variables injectées
 sed -e "s|\${GCP_PROJECT}|${PROJECT_ID}|g" -e "s|\${GCS_RAG_BUCKET}|${GCS_RAG_BUCKET}|g" deploy/k8s/deployment.yaml | kubectl apply -f -
+kubectl apply -f deploy/k8s/pdb.yaml 2>/dev/null || true
 
 echo "⏳ Attente de disponibilité du service..."
 kubectl rollout status deployment/rag-comparison-demo -n default --timeout=120s

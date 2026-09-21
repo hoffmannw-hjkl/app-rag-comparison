@@ -16,8 +16,18 @@ spec:
         app: rag-comparison-demo
     spec:
       serviceAccountName: rag-comparison-ksa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
       containers:
         - name: app
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           image: europe-west1-docker.pkg.dev/${GCP_PROJECT}/ai-demo-repo/rag-comparison:latest
           imagePullPolicy: Always
           ports:
