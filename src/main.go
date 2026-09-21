@@ -237,9 +237,15 @@ func storedToDocument(sd StoredDocument) Document {
 func main() {
 	projectID := os.Getenv("GCP_PROJECT")
 	if projectID == "" {
+		projectID = os.Getenv("PROJECT_ID")
+	}
+	if projectID == "" {
 		projectID = "wh-ai-blueprint-a363"
 	}
 	region := os.Getenv("GCP_REGION")
+	if region == "" {
+		region = os.Getenv("REGION")
+	}
 	if region == "" {
 		region = "europe-west1"
 	}

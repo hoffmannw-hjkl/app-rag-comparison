@@ -104,8 +104,8 @@ L'application lit sa configuration depuis les variables d'environnement suivante
 
 | Variable | Type | Valeur par défaut | Description |
 | :--- | :--- | :--- | :--- |
-| `PROJECT_ID` | Chaîne | Découverte via métadonnées GCP | Identifiant du projet Google Cloud hébergeant Vertex AI. |
-| `REGION` | Chaîne | `europe-west1` | Région Google Cloud utilisée pour les appels d'API régionaux. |
+| `GCP_PROJECT` (ou `PROJECT_ID`) | Chaîne | Découverte via métadonnées GCP | Identifiant du projet Google Cloud hébergeant Vertex AI. |
+| `GCP_REGION` (ou `REGION`) | Chaîne | `europe-west1` | Région Google Cloud utilisée pour les appels d'API régionaux. |
 | `GEMINI_MODEL` | Chaîne | `gemini-3.5-flash` | Modèle Gemini par défaut au démarrage du service. |
 | `GCS_RAG_BUCKET` | Chaîne | Aucune (optionnel) | Nom du bucket GCS pour la persistance de l'index documentaire (`corpus.json`). |
 | `PORT` | Entier | `8080` | Port d'écoute du serveur HTTP. |
@@ -125,11 +125,11 @@ L'application lit sa configuration depuis les variables d'environnement suivante
 # 1. Cloner le dépôt et se placer dans le répertoire source
 cd src
 
-# 2. Configurer les variables d'environnement GCP
-export PROJECT_ID=$(gcloud config get-value project)
-export REGION="europe-west1"
+# 2. Configurer les variables d'environnement GCP (GCP_PROJECT ou PROJECT_ID)
+export GCP_PROJECT=$(gcloud config get-value project)
+export GCP_REGION="europe-west1"
 export GEMINI_MODEL="gemini-3.5-flash"
-export GCS_RAG_BUCKET="${PROJECT_ID}-rag-docs"
+export GCS_RAG_BUCKET="${GCP_PROJECT}-rag-docs"
 
 # 3. Lancer les tests unitaires
 go test -v ./...
