@@ -104,8 +104,8 @@ Configure application behavior using the following environment variables:
 
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `PROJECT_ID` | String | Auto-detected via GCP metadata | Google Cloud project ID hosting Vertex AI. |
-| `REGION` | String | `europe-west1` | Target Google Cloud region for regional Vertex AI calls. |
+| `GCP_PROJECT` (or `PROJECT_ID`) | String | Auto-detected via GCP metadata | Google Cloud project ID hosting Vertex AI. |
+| `GCP_REGION` (or `REGION`) | String | `europe-west1` | Target Google Cloud region for regional Vertex AI calls. |
 | `GEMINI_MODEL` | String | `gemini-3.5-flash` | Default Gemini model configured at startup. |
 | `GCS_RAG_BUCKET` | String | None (optional) | Cloud Storage bucket name for corpus snapshot persistence (`corpus.json`). |
 | `PORT` | Integer | `8080` | TCP port on which the HTTP server listens. |
@@ -125,11 +125,11 @@ Configure application behavior using the following environment variables:
 # 1. Navigate to the source directory
 cd src
 
-# 2. Set environment variables
-export PROJECT_ID=$(gcloud config get-value project)
-export REGION="europe-west1"
+# 2. Set environment variables (GCP_PROJECT or PROJECT_ID)
+export GCP_PROJECT=$(gcloud config get-value project)
+export GCP_REGION="europe-west1"
 export GEMINI_MODEL="gemini-3.5-flash"
-export GCS_RAG_BUCKET="${PROJECT_ID}-rag-docs"
+export GCS_RAG_BUCKET="${GCP_PROJECT}-rag-docs"
 
 # 3. Run unit tests
 go test -v ./...
