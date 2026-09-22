@@ -168,6 +168,33 @@ Consultez le [Guide de Déploiement Complet](docs/DEPLOYMENT_GUIDE.md) pour les 
 
 ---
 
+## 🤖 Architecture Agentique Dual-Layer (Runtime CRAG Swarm & M1L1 Skills)
+
+Ce dépôt implémente une architecture agentique à deux niveaux :
+
+### 1. Couche 2 (Runtime Production) — Mode UI `🤖 Agentic RAG` (Swarm 4 Sous-Agents CRAG)
+Disponible directement dans l'interface web (`https://rag.hoffmannw.demo.altostrat.com`) via le bouton **`🤖 Agentic RAG`** avec panneau **Trace Live** SSE (`event: agent_step`) :
+1. **`QueryPlannerAgent` (Sous-Agent 1)** : Décompose une question complexe en sous-requêtes ciblées (mots-clés lexicaux + concepts sémantiques).
+2. **`HybridRetrieverAgent` (Sous-Agent 2)** : Exécute la recherche hybride parallèle **Dense Cosine (`gemini-embedding-001`) + Sparse BM25 via Reciprocal Rank Fusion ($k=60$)** sur chaque sous-requête et déduplique les segments.
+3. **`GraderCriticAgent` (Sous-Agent 3 — Corrective RAG)** : Évalue la pertinence factuelle des segments extraits (score `/10`). Si la couverture est insuffisante, déclenche automatiquement une boucle d'**Auto-Heal (Query Rewrite)** avec élargissement du `top-K`.
+4. **`CitationSynthesizerAgent` (Sous-Agent 4)** : Génère la réponse finale en streaming (`SSE`) avec citations inline vérifiées `[Doc: <Titre>, Chunk #X]` et évaluation LLM-as-a-Judge asynchrone.
+
+### 2. Couche 1 (Ingénierie Assistée par IA) — Sous-Agents & Skill M1L1 (`.agents/`)
+Découverts automatiquement par **Jetski**, **Antigravity** et **Gemini CLI** (voir [`AGENTS.md`](AGENTS.md)) :
+- **Sous-Agents spécialisés (`.agents/agents/`)** :
+  - **[`rag-eval-scientist`](.agents/agents/rag-eval-scientist.md)** : Calibration **Reciprocal Rank Fusion (RRF $k=60$)**, BM25 ($k_1=1.2, b=0.75$) et **LLM-as-a-Judge** (Fidélité, Pertinence, Précision du Contexte).
+  - **[`go-concurrency-reviewer`](.agents/agents/go-concurrency-reviewer.md)** : Audit des verrous `sync.RWMutex`, prévention des goroutine leaks sur `http.Flusher` SSE et synchronisation asynchrone GCS.
+- **Skill Procédural M1L1 (`rag-benchmark-and-ci`)** :
+  - **Référence** : [`.agents/skills/rag-benchmark-and-ci/SKILL.md`](.agents/skills/rag-benchmark-and-ci/SKILL.md)
+  - **Script Gatekeeper (`verify.sh`)** :
+    ```bash
+    ./.agents/skills/rag-benchmark-and-ci/scripts/verify.sh
+    ```
+    Exécute `go vet ./...`, `go test -v -race ./...`, vérifie la contrainte **Zero External Dependencies** dans `src/go.mod`, et valide l'intégrité du pipeline 4-agents CRAG.
+
+---
+
 ## Licence
 
 Ce projet est distribué sous licence Apache 2.0. Consultez le fichier [LICENSE](LICENSE) pour plus d'informations.
+
