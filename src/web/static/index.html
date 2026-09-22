@@ -30,11 +30,15 @@
       </div>
     </div>
 
-    <!-- Mode Switcher : Vue RAG / RAG vs Search / Comparateur de Modèles / Triple Comparatif -->
+    <!-- Mode Switcher : Vue RAG / Agentic RAG / RAG vs Search / Comparateur de Modèles / Triple Comparatif -->
     <div class="flex items-center space-x-1.5 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
       <button id="btn-mode-rag" onclick="setMode('rag')" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-blue-600 text-white shadow-sm flex items-center space-x-1.5">
         <i class="fa-solid fa-wand-magic-sparkles text-cyan-300"></i>
         <span>Vue RAG</span>
+      </button>
+      <button id="btn-mode-agentic" onclick="setMode('agentic')" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 text-slate-400 hover:text-white flex items-center space-x-1.5">
+        <i class="fa-solid fa-sitemap text-amber-400"></i>
+        <span>🤖 Agentic RAG</span>
       </button>
       <button id="btn-mode-split" onclick="setMode('split')" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 text-slate-400 hover:text-white flex items-center space-x-1.5">
         <i class="fa-solid fa-columns"></i>
@@ -49,6 +53,7 @@
         <span>RAG 1 / RAG 2 / Recherche</span>
       </button>
     </div>
+
 
     <!-- Sélecteurs de Modèles Gemini 3 -->
     <div class="flex items-center space-x-2">
@@ -278,6 +283,7 @@
     function setMode(mode) {
       currentMode = mode;
       const btnRag = document.getElementById('btn-mode-rag');
+      const btnAgentic = document.getElementById('btn-mode-agentic');
       const btnSplit = document.getElementById('btn-mode-split');
       const btnModels = document.getElementById('btn-mode-models');
       const btnTriple = document.getElementById('btn-mode-triple');
@@ -288,6 +294,9 @@
       const inactiveClass = 'px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 text-slate-400 hover:text-white flex items-center space-x-1.5';
 
       btnRag.className = mode === 'rag' ? activeClass : inactiveClass;
+      if (btnAgentic) {
+        btnAgentic.className = mode === 'agentic' ? 'px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-amber-600 text-white shadow-sm flex items-center space-x-1.5' : inactiveClass;
+      }
       btnSplit.className = mode === 'split' ? activeClass : inactiveClass;
       btnModels.className = mode === 'models' ? 'px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-purple-600 text-white shadow-sm flex items-center space-x-1.5' : inactiveClass;
       btnTriple.className = mode === 'triple' ? 'px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 bg-emerald-600 text-white shadow-sm flex items-center space-x-1.5' : inactiveClass;
@@ -300,6 +309,7 @@
         labelModelA.innerText = "Modèle :";
       }
     }
+
 
     async function loadModels() {
       try {
@@ -706,7 +716,9 @@
       input.value = '';
       appendUserMessage(query);
 
-      if (currentMode === 'triple') {
+      if (currentMode === 'agentic') {
+        renderAgenticComparison(query);
+      } else if (currentMode === 'triple') {
         renderTripleComparison(query);
       } else if (currentMode === 'models') {
         renderModelsComparison(query);
@@ -737,11 +749,12 @@
 
     /**
      * Pipeline unifié de streaming RAG avec visualisation granulaire des étapes :
-     * 1. Recherche lexicale / sémantique (Retrieval)
-     * 2. Contexte & Grounding documentaire extrait
-     * 3. Réflexion & Analyse avec chronomètre en direct jusqu'au 1er token (TTFT)
-     * 4. Synthèse et génération continue de tokens
-     * 5. Métriques finales et statut Terminé
+     * 1. Orchestration Multi-Agents (si agenticMode = true)
+     * 2. Recherche lexicale / sémantique (Retrieval)
+     * 3. Contexte & Grounding documentaire extrait
+     * 4. Réflexion & Analyse avec chronomètre en direct jusqu'au 1er token (TTFT)
+     * 5. Synthèse et génération continue de tokens
+     * 6. Métriques finales et statut Terminé
      */
     function streamRAGColumn({
       query,
@@ -753,7 +766,9 @@
       telemetryId = null,
       ttftId = null,
       durationId = null,
-      tokensId = null
+      tokensId = null,
+      agenticMode = false,
+      agentTraceId = null
     }) {
       const textEl = document.getElementById(textId);
       const badgeEl = badgeId ? document.getElementById(badgeId) : null;
@@ -763,7 +778,9 @@
       const ttftEl = ttftId ? document.getElementById(ttftId) : null;
       const durEl = durationId ? document.getElementById(durationId) : null;
       const tokEl = tokensId ? document.getElementById(tokensId) : null;
+      const agentTraceEl = agentTraceId ? document.getElementById(agentTraceId) : null;
       const c = document.getElementById('messages-container');
+
 
       const startTime = Date.now();
       let firstTokenReceived = false;
@@ -960,8 +977,61 @@
       }
     }
 
-    const es = new EventSource(`/api/chat/stream?q=${encodeURIComponent(query)}&model=${encodeURIComponent(modelId)}`);
+    const modeParam = agenticMode ? '&mode=agentic' : '';
+    const es = new EventSource(`/api/chat/stream?q=${encodeURIComponent(query)}&model=${encodeURIComponent(modelId)}${modeParam}`);
     let currentChunks = [];
+    const agentStateMap = {};
+
+    es.addEventListener('agent_step', (e) => {
+      try {
+        const step = JSON.parse(e.data);
+        agentStateMap[step.agent] = step;
+        if (agentTraceEl) {
+          agentTraceEl.classList.remove('hidden');
+          const orderedAgents = ['QueryPlannerAgent', 'HybridRetrieverAgent', 'GraderCriticAgent', 'CitationSynthesizerAgent'];
+          const rowsHtml = orderedAgents
+            .filter(ag => agentStateMap[ag])
+            .map(ag => {
+              const st = agentStateMap[ag];
+              const isDone = st.status === 'done';
+              const iconHtml = isDone
+                ? `<i class="fa-solid fa-circle-check text-emerald-400 text-[11px]"></i>`
+                : `<i class="fa-solid fa-circle-notch fa-spin text-amber-400 text-[11px]"></i>`;
+              const durHtml = isDone && st.duration_ms ? `<span class="text-[9px] font-mono text-slate-500 ml-auto">${st.duration_ms}ms</span>` : '';
+              const subQHtml = Array.isArray(st.sub_queries) && st.sub_queries.length > 0
+                ? `<div class="flex flex-wrap gap-1 mt-1">${st.sub_queries.map((sq, idx) => `<span class="px-1.5 py-0.5 rounded bg-amber-950/50 border border-amber-500/30 text-amber-300 text-[9px] font-mono">[#${idx+1}] ${esc(sq)}</span>`).join('')}</div>`
+                : '';
+              return `
+                <div class="p-2 rounded-lg bg-slate-900/90 border ${isDone ? 'border-slate-800' : 'border-amber-500/40'} text-[11px] space-y-0.5">
+                  <div class="flex items-center gap-1.5 font-semibold text-slate-200">
+                    ${iconHtml}
+                    <span>${esc(st.role || st.agent)}</span>
+                    ${durHtml}
+                  </div>
+                  <div class="text-[10px] text-slate-400 pl-4">${esc(st.summary || '')}</div>
+                  <div class="pl-4">${subQHtml}</div>
+                </div>
+              `;
+            }).join('');
+
+          agentTraceEl.innerHTML = `
+            <details open class="bg-slate-950/90 border border-amber-500/30 rounded-xl p-2.5 space-y-2 mb-2 shadow-inner">
+              <summary class="text-[11px] font-bold text-amber-400 cursor-pointer flex items-center justify-between">
+                <span class="flex items-center gap-1.5">
+                  <i class="fa-solid fa-sitemap text-amber-400"></i>
+                  <span>Orchestration Multi-Agents (Swarm CRAG — 4 Sous-Agents)</span>
+                </span>
+                <span class="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 font-mono">Trace Live</span>
+              </summary>
+              <div class="space-y-1.5 pt-1.5 border-t border-slate-800/80">
+                ${rowsHtml}
+              </div>
+            </details>
+          `;
+          c.scrollTop = c.scrollHeight;
+        }
+      } catch (err) {}
+    });
 
     es.addEventListener('status', (e) => {
       try {
@@ -1120,6 +1190,133 @@
         telemetryId: `telemetry-${contentId}`
       });
     }
+
+    // 1b. Vue Comparatif Agentic RAG (Swarm 4 Sous-Agents CRAG) vs RAG Standard (Single-Shot)
+    async function renderAgenticComparison(query) {
+      const c = document.getElementById('messages-container');
+      const compDiv = document.createElement('div');
+      compDiv.className = 'w-full bg-slate-900/60 border border-amber-500/30 rounded-2xl p-5 space-y-4 shadow-xl';
+
+      const idAgentic = 'agentic-rag-' + Date.now();
+      const idStandard = 'standard-rag-' + Date.now();
+      const modelDisplayName = getModelName(selectedModel);
+
+      compDiv.innerHTML = `
+        <div class="flex items-center justify-between pb-3 border-b border-slate-800 text-xs">
+          <div class="flex items-center space-x-2">
+            <span class="px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30 flex items-center gap-1.5">
+              <i class="fa-solid fa-sitemap"></i>
+              <span>🤖 Agentic RAG (Multi-Agent CRAG) vs RAG Standard</span>
+            </span>
+            <span class="font-bold text-slate-200">"${esc(query)}"</span>
+          </div>
+          <span class="text-slate-400 text-[11px]">Modèle : ${modelDisplayName}</span>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <!-- Colonne Gauche : Agentic RAG (Planner + Retriever + Critic + Synthesizer) -->
+          <div class="bg-slate-950 border border-amber-500/40 rounded-xl p-4 space-y-3 flex flex-col justify-between shadow-lg shadow-amber-500/5">
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <div class="flex items-center space-x-2 text-xs font-bold text-amber-400">
+                  <i class="fa-solid fa-sitemap"></i>
+                  <span>🤖 Agentic RAG (Swarm 4 Sous-Agents CRAG)</span>
+                </div>
+                <span id="badge-${idAgentic}" class="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 animate-pulse">
+                  Orchestration...
+                </span>
+              </div>
+              <div id="trace-${idAgentic}" class="hidden"></div>
+              <div id="status-${idAgentic}" class="text-xs text-amber-400 flex items-center space-x-2 animate-pulse mb-2">
+                <i class="fa-solid fa-circle-notch fa-spin"></i>
+                <span>Démarrage du QueryPlannerAgent...</span>
+              </div>
+              <div id="grounding-${idAgentic}" class="hidden mb-2 text-[10px] text-slate-400"></div>
+              <div id="${idAgentic}" class="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap min-h-[140px]"></div>
+            </div>
+            <div class="pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-1.5 text-center text-[11px] font-mono text-slate-400">
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">1er Token</div>
+                <div class="font-bold text-amber-300 text-xs" id="ttft-${idAgentic}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">Durée</div>
+                <div class="font-bold text-slate-200 text-xs" id="duration-${idAgentic}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">Tokens</div>
+                <div class="font-bold text-slate-200 text-xs" id="tokens-${idAgentic}">--</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Colonne Droite : RAG Standard (Single-Shot) -->
+          <div class="bg-slate-950 border border-blue-500/30 rounded-xl p-4 space-y-3 flex flex-col justify-between shadow-lg shadow-blue-500/5">
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <div class="flex items-center space-x-2 text-xs font-bold text-blue-400">
+                  <i class="fa-solid fa-wand-magic-sparkles"></i>
+                  <span>⚡ RAG Standard (Single-Shot)</span>
+                </div>
+                <span id="badge-${idStandard}" class="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 animate-pulse">
+                  Recherche...
+                </span>
+              </div>
+              <div id="status-${idStandard}" class="text-xs text-blue-400 flex items-center space-x-2 animate-pulse mb-2">
+                <i class="fa-solid fa-circle-notch fa-spin"></i>
+                <span>Recherche hybride standard...</span>
+              </div>
+              <div id="grounding-${idStandard}" class="hidden mb-2 text-[10px] text-slate-400"></div>
+              <div id="${idStandard}" class="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap min-h-[140px]"></div>
+            </div>
+            <div class="pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-1.5 text-center text-[11px] font-mono text-slate-400">
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">1er Token</div>
+                <div class="font-bold text-blue-300 text-xs" id="ttft-${idStandard}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">Durée</div>
+                <div class="font-bold text-slate-200 text-xs" id="duration-${idStandard}">--</div>
+              </div>
+              <div class="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                <div class="text-[9px] text-slate-500 uppercase">Tokens</div>
+                <div class="font-bold text-slate-200 text-xs" id="tokens-${idStandard}">--</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+      c.appendChild(compDiv);
+      c.scrollTop = c.scrollHeight;
+
+      streamRAGColumn({
+        query,
+        modelId: selectedModel,
+        textId: idAgentic,
+        badgeId: `badge-${idAgentic}`,
+        statusId: `status-${idAgentic}`,
+        groundingId: `grounding-${idAgentic}`,
+        ttftId: `ttft-${idAgentic}`,
+        durationId: `duration-${idAgentic}`,
+        tokensId: `tokens-${idAgentic}`,
+        agenticMode: true,
+        agentTraceId: `trace-${idAgentic}`
+      });
+
+      streamRAGColumn({
+        query,
+        modelId: selectedModel,
+        textId: idStandard,
+        badgeId: `badge-${idStandard}`,
+        statusId: `status-${idStandard}`,
+        groundingId: `grounding-${idStandard}`,
+        ttftId: `ttft-${idStandard}`,
+        durationId: `duration-${idStandard}`,
+        tokensId: `tokens-${idStandard}`,
+        agenticMode: false
+      });
+    }
+
 
     // 2. Vue Comparatif Split : Recherche Classique vs RAG Synthétisé
     async function renderSplitResponse(query) {

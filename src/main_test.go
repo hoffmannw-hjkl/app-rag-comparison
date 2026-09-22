@@ -1369,3 +1369,43 @@ func TestHandleEvaluateValidation(t *testing.T) {
 		t.Errorf("code payload vide = %d, attendu 400", wEmpty.Code)
 	}
 }
+
+func TestDecomposeQueryAgent(t *testing.T) {
+	sub := decomposeQueryAgent("Quelles sont les règles WAF Cloud Armor et les seuils de budget FinOps ?")
+	if len(sub) < 2 {
+		t.Fatalf("attendu au moins 2 sous-requêtes, obtenu %v", sub)
+	}
+	if !strings.Contains(strings.ToLower(sub[0]), "waf") {
+		t.Errorf("sous-requête 1 attendue sur WAF, obtenu %q", sub[0])
+	}
+	if !strings.Contains(strings.ToLower(sub[1]), "finops") {
+		t.Errorf("sous-requête 2 attendue sur FinOps, obtenu %q", sub[1])
+	}
+}
+
+func TestHandleChatStreamAgenticMode(t *testing.T) {
+	s := &ServerState{
+		modelName:     "gemini-3.5-flash",
+		embedEndpoint: "http://127.0.0.1:1/nonexistent",
+		documents: []Document{
+
+			newDocument("doc-waf", "Cloud Armor WAF", "gs://b/waf.pdf", "La politique Cloud Armor WAF protège contre OWASP Top 10 SQLi et XSS.", time.Now()),
+			newDocument("doc-finops", "Budget FinOps", "gs://b/finops.pdf", "Les alertes de budget FinOps sont configurées à 50%, 75%, 90% et 100%.", time.Now()),
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream?q=règles+WAF+et+seuils+budget+FinOps&mode=agentic", nil)
+	w := httptest.NewRecorder()
+	s.handleChatStream(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, attendu 200", w.Code)
+	}
+
+	body := w.Body.String()
+	for _, expectedAgent := range []string{"QueryPlannerAgent", "HybridRetrieverAgent", "GraderCriticAgent", "CitationSynthesizerAgent"} {
+		if !strings.Contains(body, expectedAgent) {
+			t.Errorf("événement SSE agent_step manquant pour %s dans le flux :\n%s", expectedAgent, body)
+		}
+	}
+}
