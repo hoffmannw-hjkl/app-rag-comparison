@@ -168,6 +168,33 @@ Refer to the [Deployment Guide](docs/DEPLOYMENT_GUIDE.md) for step-by-step produ
 
 ---
 
+## 🤖 Dual-Layer Agentic Architecture (Runtime CRAG Swarm & M1L1 Skills)
+
+This repository implements a two-tier Agentic AI architecture:
+
+### 1. Layer 2 (Production Runtime) — `🤖 Agentic RAG` UI Mode (4-Subagent CRAG Swarm)
+Available directly in the web interface (`https://rag.hoffmannw.demo.altostrat.com`) via the **`🤖 Agentic RAG`** header toggle with a live interactive **Trace Live** SSE panel (`event: agent_step`):
+1. **`QueryPlannerAgent` (Subagent 1)**: Decomposes complex user prompts into targeted sub-queries (lexical keywords + semantic concepts).
+2. **`HybridRetrieverAgent` (Subagent 2)**: Runs parallel **Dense Cosine (`gemini-embedding-001`) + Sparse BM25 with Reciprocal Rank Fusion ($k=60$)** across sub-queries and deduplicates retrieved chunks.
+3. **`GraderCriticAgent` (Subagent 3 — Corrective RAG)**: Evaluates chunk relevance (`/10`). If factual coverage is insufficient, triggers an automated **Self-Correction (Query Rewrite)** loop with expanded `top-K`.
+4. **`CitationSynthesizerAgent` (Subagent 4)**: Streams the final answer (`SSE`) with verified inline citations `[Doc: <Title>, Chunk #X]` and asynchronous LLM-as-a-Judge scoring.
+
+### 2. Layer 1 (AI-Assisted Engineering) — Repo Subagents & M1L1 Skill (`.agents/`)
+Automatically discovered by **Jetski**, **Antigravity**, and **Gemini CLI** (see [`AGENTS.md`](AGENTS.md)):
+- **Specialized Subagents (`.agents/agents/`)**:
+  - **[`rag-eval-scientist`](.agents/agents/rag-eval-scientist.md)**: **Reciprocal Rank Fusion (RRF $k=60$)** tuning, BM25 ($k_1=1.2, b=0.75$), and **LLM-as-a-Judge** (Faithfulness, Answer Relevance, Context Precision) auditing.
+  - **[`go-concurrency-reviewer`](.agents/agents/go-concurrency-reviewer.md)**: `sync.RWMutex` lock-contention audits, SSE `http.Flusher` goroutine leak prevention, and non-blocking GCS background synchronization.
+- **M1L1 Procedural Skill (`rag-benchmark-and-ci`)**:
+  - **Reference**: [`.agents/skills/rag-benchmark-and-ci/SKILL.md`](.agents/skills/rag-benchmark-and-ci/SKILL.md)
+  - **Automated Gatekeeper Script (`verify.sh`)**:
+    ```bash
+    ./.agents/skills/rag-benchmark-and-ci/scripts/verify.sh
+    ```
+    Runs `go vet ./...`, `go test -v -race ./...`, enforces the **Zero Third-Party Dependencies** rule on `src/go.mod`, and verifies the 4-subagent CRAG pipeline.
+
+---
+
 ## License
 
 This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
+
