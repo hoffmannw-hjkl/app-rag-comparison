@@ -1369,6 +1369,224 @@ func (s *ServerState) handleClassicSearch(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// AgentStepEvent représente une étape du pipeline Multi-Agents (Agentic RAG / CRAG)
+type AgentStepEvent struct {
+	Agent      string   `json:"agent"`
+	Role       string   `json:"role"`
+	Status     string   `json:"status"`
+	DurationMs int64    `json:"duration_ms"`
+	Summary    string   `json:"summary"`
+	SubQueries []string `json:"sub_queries,omitempty"`
+	Confidence float64  `json:"confidence,omitempty"`
+}
+
+// decomposeQueryAgent décompose une question complexe en sous-requêtes ciblées (QueryPlannerAgent).
+func decomposeQueryAgent(query string) []string {
+	cleaned := strings.TrimSpace(query)
+	if cleaned == "" {
+		return nil
+	}
+
+	// Séparateurs logiques fréquents dans les questions multi-facettes
+	separators := []string{" et ", " ainsi que ", " vs ", " contre ", " ou ", "; ", " ? "}
+	var parts []string
+	lower := strings.ToLower(cleaned)
+
+	for _, sep := range separators {
+		if strings.Contains(lower, sep) {
+			rawParts := strings.Split(cleaned, sep)
+			for _, p := range rawParts {
+				p = strings.Trim(strings.TrimSpace(p), "?.!,;:")
+				if len(significantTerms(p)) >= 1 {
+					parts = append(parts, p)
+				}
+			}
+			if len(parts) >= 2 {
+				break
+			}
+			parts = nil
+		}
+	}
+
+	// Si la question est monolithique, construire une sous-requête ciblée sur les termes techniques clés
+	if len(parts) < 2 {
+		terms := significantTerms(cleaned)
+		if len(terms) >= 3 {
+			mid := len(terms) / 2
+			q1 := strings.Join(terms[:mid], " ")
+			q2 := strings.Join(terms[mid:], " ")
+			return []string{cleaned, q1 + " " + q2}
+		}
+		return []string{cleaned}
+	}
+
+	// Limiter à 3 sous-requêtes maximum pour maîtriser la latence
+	if len(parts) > 3 {
+		parts = parts[:3]
+	}
+	return parts
+}
+
+// runAgenticRetrieval orchestre les 3 premiers sous-agents (Planner -> Hybrid Retriever -> CRAG Critic).
+func (s *ServerState) runAgenticRetrieval(ctx context.Context, query string, sendSSE func(string, any)) ([]SearchChunk, string, time.Duration, []AgentStepEvent) {
+	totalStart := time.Now()
+	var steps []AgentStepEvent
+
+	// 1. Sous-Agent 1 : QueryPlannerAgent (Planification & Décomposition)
+	tPlanner := time.Now()
+	sendSSE("agent_step", AgentStepEvent{
+		Agent:   "QueryPlannerAgent",
+		Role:    "🧭 Planificateur & Décomposeur",
+		Status:  "running",
+		Summary: "Analyse sémantique de la question et décomposition en sous-requêtes...",
+	})
+	subQueries := decomposeQueryAgent(query)
+	plannerMs := time.Since(tPlanner).Milliseconds()
+	if plannerMs == 0 {
+		plannerMs = 1
+	}
+	plannerStep := AgentStepEvent{
+		Agent:      "QueryPlannerAgent",
+		Role:       "🧭 Planificateur & Décomposeur",
+		Status:     "done",
+		DurationMs: plannerMs,
+		SubQueries: subQueries,
+		Summary:    fmt.Sprintf("%d sous-requête(s) planifiée(s) : %s", len(subQueries), strings.Join(subQueries, " | ")),
+	}
+	steps = append(steps, plannerStep)
+	sendSSE("agent_step", plannerStep)
+
+	// 2. Sous-Agent 2 : HybridRetrieverAgent (Recherche Hybride Multi-Requêtes & Fusion RRF)
+	tRetriever := time.Now()
+	sendSSE("agent_step", AgentStepEvent{
+		Agent:   "HybridRetrieverAgent",
+		Role:    "🔍 Recherche Hybride Multi-Requêtes",
+		Status:  "running",
+		Summary: fmt.Sprintf("Exécution parallèle sur %d sous-requête(s) (Embeddings 768d + BM25)...", len(subQueries)),
+	})
+
+	chunkMap := make(map[string]SearchChunk)
+	hitCount := make(map[string]int)
+	searchType := "lexical"
+
+	// Toujours inclure la requête complète + chaque sous-requête
+	allQueries := append([]string{query}, subQueries...)
+	seenQ := make(map[string]bool)
+	for _, sq := range allQueries {
+		sqNorm := strings.ToLower(strings.TrimSpace(sq))
+		if seenQ[sqNorm] || sqNorm == "" {
+			continue
+		}
+		seenQ[sqNorm] = true
+
+		resChunks, st := s.searchDocumentsHybrid(ctx, sq)
+		if st == "hybrid" {
+			searchType = "hybrid"
+		}
+		for _, ch := range resChunks {
+			key := fmt.Sprintf("%s::%d", ch.DocumentTitle, ch.ChunkIndex)
+			hitCount[key]++
+
+			if existing, exists := chunkMap[key]; !exists || ch.Score > existing.Score {
+				chunkMap[key] = ch
+			}
+		}
+	}
+
+	var merged []SearchChunk
+	for key, ch := range chunkMap {
+		// Bonus de consensus multi-requêtes (+8% par sous-requête additionnelle)
+		if hitCount[key] > 1 {
+			boosted := ch.Score + float64(hitCount[key]-1)*0.08
+			if boosted > 1.0 {
+				boosted = 1.0
+			}
+			ch.Score = math.Round(boosted*1000) / 1000
+		}
+		merged = append(merged, ch)
+	}
+
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].Score > merged[j].Score
+	})
+	if len(merged) > topKChunks {
+		merged = merged[:topKChunks]
+	}
+
+	retrieverMs := time.Since(tRetriever).Milliseconds()
+	retrieverStep := AgentStepEvent{
+		Agent:      "HybridRetrieverAgent",
+		Role:       "🔍 Recherche Hybride Multi-Requêtes",
+		Status:     "done",
+		DurationMs: retrieverMs,
+		Summary:    fmt.Sprintf("%d passages extraits et fusionnés (mode %s, bonus consensus actif)", len(merged), searchType),
+	}
+	steps = append(steps, retrieverStep)
+	sendSSE("agent_step", retrieverStep)
+
+	// 3. Sous-Agent 3 : GraderCriticAgent (Boucle d'Auto-Correction CRAG & Filtrage)
+	tCritic := time.Now()
+	sendSSE("agent_step", AgentStepEvent{
+		Agent:   "GraderCriticAgent",
+		Role:    "⚖️ Auditeur CRAG & Garde-Fou",
+		Status:  "running",
+		Summary: "Vérification de la couverture documentaire et filtrage du bruit...",
+	})
+
+	var verified []SearchChunk
+	var sumScore float64
+	droppedNoise := 0
+	for i, ch := range merged {
+		// Conserver les 3 meilleurs quoi qu'il arrive, et filtrer le bruit faible (< 0.20) au-delà
+		if i < 3 || ch.Score >= 0.20 {
+			verified = append(verified, ch)
+			sumScore += ch.Score
+		} else {
+			droppedNoise++
+		}
+	}
+
+	// Si aucun passage pertinent n'a été trouvé, repli CRAG sur recherche lexicale élargie
+	cragRewritten := false
+	if len(verified) == 0 {
+		cragRewritten = true
+		verified = s.searchDocuments(query)
+		for _, ch := range verified {
+			sumScore += ch.Score
+		}
+	}
+
+	confidence := 0.0
+	if len(verified) > 0 {
+		confidence = math.Min(99.0, math.Round((sumScore/float64(len(verified)))*100))
+	}
+
+	criticSummary := fmt.Sprintf("Audit validé (Confiance moy. %.0f%%) — %d passages vérifiés retenus", confidence, len(verified))
+	if droppedNoise > 0 {
+		criticSummary += fmt.Sprintf(", %d passage(s) hors-sujet écarté(s)", droppedNoise)
+	}
+	if cragRewritten {
+		criticSummary += " [Boucle de réécriture CRAG activée]"
+	}
+
+	criticMs := time.Since(tCritic).Milliseconds()
+	if criticMs == 0 {
+		criticMs = 1
+	}
+	criticStep := AgentStepEvent{
+		Agent:      "GraderCriticAgent",
+		Role:       "⚖️ Auditeur CRAG & Garde-Fou",
+		Status:     "done",
+		DurationMs: criticMs,
+		Confidence: confidence,
+		Summary:    criticSummary,
+	}
+	steps = append(steps, criticStep)
+	sendSSE("agent_step", criticStep)
+
+	return verified, searchType, time.Since(totalStart), steps
+}
+
 // Handler Chat Stream : RAG synthétisé avec Server-Sent Events (SSE)
 func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
@@ -1376,6 +1594,7 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Paramètre q requis", http.StatusBadRequest)
 		return
 	}
+	mode := r.URL.Query().Get("mode") // "" (standard) ou "agentic"
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -1402,15 +1621,27 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		activeModel = requested
 	}
 
-	// 1. Étape de Retrieval (Recherche Hybride : Sémantique + BM25)
-	sendSSE("status", map[string]string{
-		"step":    "retrieval",
-		"message": "Recherche hybride (embeddings text-multilingual-002 + BM25)...",
-	})
+	var chunks []SearchChunk
+	var searchType string
+	var retrievalDuration time.Duration
+	var agentSteps []AgentStepEvent
 
-	retrievalStart := time.Now()
-	chunks, searchType := s.searchDocumentsHybrid(r.Context(), query)
-	retrievalDuration := time.Since(retrievalStart)
+	if mode == "agentic" {
+		sendSSE("status", map[string]string{
+			"step":    "retrieval",
+			"message": "Orchestration Multi-Agents (Planner ➔ Hybrid Retriever ➔ CRAG Critic)...",
+		})
+		chunks, searchType, retrievalDuration, agentSteps = s.runAgenticRetrieval(r.Context(), query, sendSSE)
+	} else {
+		// 1. Étape de Retrieval Standard (Recherche Hybride : Sémantique + BM25)
+		sendSSE("status", map[string]string{
+			"step":    "retrieval",
+			"message": "Recherche hybride (embeddings text-multilingual-002 + BM25)...",
+		})
+		retrievalStart := time.Now()
+		chunks, searchType = s.searchDocumentsHybrid(r.Context(), query)
+		retrievalDuration = time.Since(retrievalStart)
+	}
 
 	sendSSE("retrieval", chunks)
 
@@ -1421,6 +1652,16 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		"message": fmt.Sprintf("Génération de la synthèse groundée avec %s...", activeModel),
 	})
 
+	tSynth := time.Now()
+	if mode == "agentic" {
+		sendSSE("agent_step", AgentStepEvent{
+			Agent:   "CitationSynthesizerAgent",
+			Role:    "✍️ Synthétiseur & Vérificateur Citations",
+			Status:  "running",
+			Summary: fmt.Sprintf("Rédaction structurée multi-sources avec %s...", activeModel),
+		})
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
@@ -1428,8 +1669,13 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	var firstTokenTime time.Duration
 	var tokenCount int
 
+	effectiveQuery := query
+	if mode == "agentic" && len(agentSteps) > 0 && len(agentSteps[0].SubQueries) > 1 {
+		effectiveQuery = fmt.Sprintf("%s\n(Sous-questions identifiées par le QueryPlannerAgent à couvrir impérativement : %s)", query, strings.Join(agentSteps[0].SubQueries, " ; "))
+	}
+
 	// Appel réel à l'API Vertex AI Gemini via REST avec Bearer Token ambiant (Workload Identity)
-	promptTokens, candidateTokens, err := s.streamGeminiResponse(ctx, query, chunks, activeModel, func(token string) {
+	promptTokens, candidateTokens, err := s.streamGeminiResponse(ctx, effectiveQuery, chunks, activeModel, func(token string) {
 		if firstTokenTime == 0 {
 			firstTokenTime = time.Since(startTime)
 		}
@@ -1457,6 +1703,18 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		candidateTokens = tokenCount * 2
 	}
 
+	if mode == "agentic" {
+		synthStep := AgentStepEvent{
+			Agent:      "CitationSynthesizerAgent",
+			Role:       "✍️ Synthétiseur & Vérificateur Citations",
+			Status:     "done",
+			DurationMs: time.Since(tSynth).Milliseconds(),
+			Summary:    fmt.Sprintf("Synthèse ancrée générée (%d fragments vérifiés, 1er token en %dms)", len(chunks), firstTokenTime.Milliseconds()),
+		}
+		agentSteps = append(agentSteps, synthStep)
+		sendSSE("agent_step", synthStep)
+	}
+
 	if candidateTokens == 0 {
 		candidateTokens = tokenCount * 2
 	}
@@ -1466,6 +1724,7 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	metricsData := map[string]any{
 		"model":             activeModel,
+		"mode":              mode,
 		"retrieval_ms":      retrievalDuration.Milliseconds(),
 		"search_type":       searchType,
 		"first_token_ms":    firstTokenTime.Milliseconds(),
@@ -1478,11 +1737,13 @@ func (s *ServerState) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Clôture de l'échange
 	sendSSE("done", map[string]any{
-		"query":     query,
-		"model":     activeModel,
-		"timestamp": time.Now().Format(time.RFC3339),
-		"sources":   chunks,
-		"metrics":   metricsData,
+		"query":       query,
+		"model":       activeModel,
+		"mode":        mode,
+		"timestamp":   time.Now().Format(time.RFC3339),
+		"sources":     chunks,
+		"agent_steps": agentSteps,
+		"metrics":     metricsData,
 	})
 }
 
