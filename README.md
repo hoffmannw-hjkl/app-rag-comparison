@@ -172,31 +172,58 @@ Consultez le [Guide de Déploiement Complet](docs/DEPLOYMENT_GUIDE.md) pour les 
 
 ## 🤖 Architecture Agentique Dual-Layer (Runtime CRAG Swarm & M1L1 Skills)
 
-Ce dépôt implémente une architecture agentique à deux niveaux :
+Ce dépôt implémente une architecture agentique à **deux niveaux complémentaires** :
+- 🚀 **Couche 2 (Run-Time en Production)** : Un **Swarm de 4 Sous-Agents Corrective RAG (CRAG)** embarqué dans le binaire Go (`src/main.go`), déclenché en temps réel par l'utilisateur dans l'interface web.
+- 🛠️ **Couche 1 (Build-Time en Ingénierie)** : **2 Sous-Agents spécialisés et 1 Skill M1L1** (`.agents/`), déclenchés dans l'IDE/CLI lors du développement et avant chaque `git commit`.
 
-### 1. Couche 2 (Runtime Production) — Mode UI `🤖 Agentic RAG` (Swarm 4 Sous-Agents CRAG)
-Disponible directement dans l'interface web (`https://rag.hoffmannw.demo.altostrat.com`) via le bouton **`🤖 Agentic RAG`** avec panneau **Trace Live** SSE (`event: agent_step`) :
-1. **`QueryPlannerAgent` (Sous-Agent 1)** : Décompose une question complexe en sous-requêtes ciblées (mots-clés lexicaux + concepts sémantiques).
-2. **`HybridRetrieverAgent` (Sous-Agent 2)** : Exécute la recherche hybride parallèle **Dense Cosine (`gemini-embedding-001`) + Sparse BM25 via Reciprocal Rank Fusion ($k=60$)** sur chaque sous-requête et déduplique les segments.
-3. **`GraderCriticAgent` (Sous-Agent 3 — Corrective RAG)** : Évalue la pertinence factuelle des segments extraits (score `/10`). Si la couverture est insuffisante, déclenche automatiquement une boucle d'**Auto-Heal (Query Rewrite)** avec élargissement du `top-K`.
-4. **`CitationSynthesizerAgent` (Sous-Agent 4)** : Génère la réponse finale en streaming (`SSE`) avec citations inline vérifiées `[Doc: <Titre>, Chunk #X]` et évaluation LLM-as-a-Judge asynchrone.
+### 🔄 Diagramme de Séquence : Comment les 4 Sous-Agents CRAG entrent en action en direct
 
-### 2. Couche 1 (Ingénierie Assistée par IA) — Sous-Agents & Skill M1L1 (`.agents/`)
-Découverts automatiquement par **Jetski**, **Antigravity** et **Gemini CLI** (voir [`AGENTS.md`](AGENTS.md)) :
-- **Sous-Agents spécialisés (`.agents/agents/`)** :
-  - **[`rag-eval-scientist`](.agents/agents/rag-eval-scientist.md)** : Calibration **Reciprocal Rank Fusion (RRF $k=60$)**, BM25 ($k_1=1.2, b=0.75$) et **LLM-as-a-Judge** (Fidélité, Pertinence, Précision du Contexte).
-  - **[`go-concurrency-reviewer`](.agents/agents/go-concurrency-reviewer.md)** : Audit des verrous `sync.RWMutex`, prévention des goroutine leaks sur `http.Flusher` SSE et synchronisation asynchrone GCS.
-- **Skill Procédural M1L1 (`rag-benchmark-and-ci`)** :
-  - **Référence** : [`.agents/skills/rag-benchmark-and-ci/SKILL.md`](.agents/skills/rag-benchmark-and-ci/SKILL.md)
-  - **Script Gatekeeper (`verify.sh`)** :
-    ```bash
-    ./.agents/skills/rag-benchmark-and-ci/scripts/verify.sh
-    ```
-    Exécute `go vet ./...`, `go test -v -race ./...`, vérifie la contrainte **Zero External Dependencies** dans `src/go.mod`, et valide l'intégrité du pipeline 4-agents CRAG.
+Lorsque l'utilisateur active le bouton **`🤖 Agentic RAG`** dans l'interface (`https://rag.hoffmannw.demo.altostrat.com`) et pose une question, voici l'enchaînement exact streamé en SSE (`event: agent_step`) vers le panneau **Trace Live** :
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as 👤 Utilisateur (UI Web)
+    participant UI as 🖥️ Panneau Trace Live (SSE)
+    participant A1 as 🧠 1. QueryPlannerAgent
+    participant A2 as 🔍 2. HybridRetrieverAgent
+    participant A3 as ⚖️ 3. GraderCriticAgent (CRAG)
+    participant A4 as ✍️ 4. CitationSynthesizerAgent
+
+    User->>UI: Clique "🤖 Agentic RAG" & envoie la question
+    UI->>A1: GET /api/chat/stream?mode=agentic&q=...
+    A1-->>UI: SSE agent_step (status: done, 3 sous-requêtes générées)
+    A1->>A2: Transmet les sous-requêtes (lexicales + sémantiques)
+    A2->>A2: Recherche parallèle Dense Cosine (768d) + BM25 (RRF k=60)
+    A2-->>UI: SSE agent_step (status: done, N chunks dédupliqués)
+    A2->>A3: Soumet les chunks candidats à l'audit factuel
+    alt Couverture insuffisante (Score < 7/10) — Boucle Auto-Heal
+        A3-->>UI: SSE agent_step (status: heal, réécriture + élargissement Top-K)
+        A3->>A2: Relance HybridRetriever avec requête reformulée
+        A2-->>A3: Nouveaux segments enrichis
+    else Couverture validée (Score >= 7/10)
+        A3-->>UI: SSE agent_step (status: done, pertinence validée)
+    end
+    A3->>A4: Transmet le contexte certifié
+    A4-->>UI: Stream SSE token par token + citations [Doc, Chunk #X]
+```
+
+### 📊 Matrice Récapitulative : Où et Comment chaque Agent intervient
+
+| Agent / Skill | Couche | Où vit-il ? | Comment / Quand entre-t-il en action ? | Rôle & Valeur ajoutée |
+| :--- | :--- | :--- | :--- | :--- |
+| **`QueryPlannerAgent`** | **Couche 2** *(Run-Time)* | `src/main.go` (`runAgenticRAGPipeline`) | **Étape 1** dès l'envoi d'une question en mode `🤖 Agentic RAG`. | Décompose une question complexe ou multi-critères en sous-requêtes ciblées (mots-clés lexicaux + concepts sémantiques). |
+| **`HybridRetrieverAgent`** | **Couche 2** *(Run-Time)* | `src/main.go` (`runAgenticRAGPipeline`) | **Étape 2** après la planification (et lors d'un *Auto-Heal*). | Exécute la recherche hybride parallèle **Dense Cosine + Sparse BM25 via Reciprocal Rank Fusion ($k=60$)** et déduplique les passages. |
+| **`GraderCriticAgent`** | **Couche 2** *(Run-Time)* | `src/main.go` (`runAgenticRAGPipeline`) | **Étape 3** avant toute génération LLM. | Évalue la pertinence factuelle des passages extraits (`/10`). Déclenche automatiquement une boucle **Auto-Heal (Query Rewrite)** si le contexte est incomplet. |
+| **`CitationSynthesizerAgent`** | **Couche 2** *(Run-Time)* | `src/main.go` (`runAgenticRAGPipeline`) | **Étape 4** une fois les passages validés par le `GraderCriticAgent`. | Génère la synthèse en streaming SSE avec citations vérifiées `[Doc: <Titre>, Chunk #X]` et lance l'évaluation Autorater Vertex AI. |
+| **[`rag-eval-scientist`](.agents/agents/rag-eval-scientist.md)** | **Couche 1** *(Build-Time)* | `.agents/agents/rag-eval-scientist.md` | Dans **Jetski / Antigravity / Gemini CLI** lors du tuning des poids RRF/BM25 ou des prompts d'évaluation. | Audite les hyperparamètres **RRF ($k=60$)**, BM25 ($k_1=1.2, b=0.75$) et la fidélité **LLM-as-a-Judge** (`Groundedness` / `QA Relevance`). |
+| **[`go-concurrency-reviewer`](.agents/agents/go-concurrency-reviewer.md)** | **Couche 1** *(Build-Time)* | `.agents/agents/go-concurrency-reviewer.md` | Dans **Jetski / Antigravity / Gemini CLI** avant de commiter du code Go (`src/main.go`). | Vérifie l'absence de deadlock `sync.RWMutex`, la fermeture propre des flux SSE (`r.Context().Done()`) et la synchro GCS asynchrone. |
+| **[`rag-benchmark-and-ci`](.agents/skills/rag-benchmark-and-ci/SKILL.md)** | **Couche 1** *(Gatekeeper)* | `.agents/skills/rag-benchmark-and-ci/scripts/verify.sh` | Exécuté dans le terminal avant chaque `git commit` ou déploiement Cloud Run. | Vérifie `go vet ./...`, `go test -v -race ./...`, la règle **Zero External Dependencies** (`src/go.mod`) et la présence des 4 agents CRAG. |
 
 ---
 
 ## Licence
 
 Ce projet est distribué sous licence Apache 2.0. Consultez le fichier [LICENSE](LICENSE) pour plus d'informations.
+
 
