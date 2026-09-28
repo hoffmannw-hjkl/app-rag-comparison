@@ -26,11 +26,12 @@ L'application s'exécute comme un binaire Go autonome compilé sans dépendance 
   - `gemini-3.1-pro-preview` : Raisonnement complexe et analyse approfondie d'architectures.
   - `gemini-3.5-flash-lite` : Cas d'usage haute fréquence à contrainte de coût minimale.
 - **Sélecteur dynamique** : Changement de modèle à chaud via `/api/model/switch` sans redémarrage de conteneur.
-- **Modes d'affichage** :
+- **Modes d'affichage (5 modes interactifs)** :
   - **RAG Simple** : Réponse unifiée avec passages sources et télémétrie.
   - **Split View** : Confrontation directe entre recherche lexicale brute et synthèse RAG.
   - **Arena (2 Modèles)** : Génération simultanée côte à côte sur la même requête avec deux modèles distincts.
   - **Triple Comparatif** : Écran 3 colonnes (Modèle A, Modèle B, Recherche Classique).
+  - **🤖 Agentic RAG (Swarm 4 Sous-Agents CRAG)** : Pipeline multi-agents auto-correctif (`QueryPlanner` ➔ `HybridRetriever` ➔ `GraderCritic` avec boucle *Auto-Heal* ➔ `CitationSynthesizer`) accompagné d'un tiroir **Trace Live** affichant en direct chaque étape SSE (`event: agent_step`).
 - **Télémétrie en temps réel** : Mesure du temps jusqu'au premier token (TTFT en ms), durée totale, et décompte exact des tokens via l'API Vertex AI.
 
 ### 3. Évaluation GenAI à la Demande (Autorater Vertex AI)
@@ -65,6 +66,7 @@ Consultez le schéma d'architecture complet au format GCP Draw dans [docs/archit
                      ┌────────────────────────────┐
                      │ • Serveur HTTP Go natif    │
                      │ • Moteur Recherche Hybride │
+                     │ • Swarm 4-Agents CRAG      │
                      │ • Static Assets (embed.FS) │
                      └──────┬──────────────┬──────┘
                             │              │
@@ -90,7 +92,7 @@ Toutes les routes d'API sont servies par le binaire Go sur le port configuré (`
 | `DELETE` | `/api/documents?id={id}` | `id` (identifiant document) | Supprime un document du corpus et met à jour l'index sur Cloud Storage. |
 | `DELETE` | `/api/documents?all=true` | `all=true` | Purge l'intégralité du corpus documentaire en mémoire et sur Cloud Storage. |
 | `GET` | `/api/search/classic` | `q={query}` | Exécute une recherche lexicale par mots-clés et retourne les extraits bruts. |
-| `GET` | `/api/chat/stream` | `q={query}`, `model={model_id}` | Établit un flux SSE (Server-Sent Events) pour streamer la réponse RAG groundée. |
+| `GET` | `/api/chat/stream` | `q={query}`, `model={model_id}`, `mode=agentic` *(opt.)* | Établit un flux SSE (`event: agent_step`, `retrieval`, `token`, `metrics`) pour streamer la réponse RAG standard ou le pipeline 4-agents CRAG. |
 | `GET` | `/api/models` | Aucun | Liste les modèles Gemini disponibles, leurs caractéristiques et le modèle actif. |
 | `POST` | `/api/model/switch` | Corps JSON `{"model": "id"}` | Modifie dynamiquement le modèle Gemini utilisé par défaut. |
 | `POST` | `/api/evaluate` | Corps JSON `{"query", "prediction", "context"}` | Lance une évaluation d'ancrage et de pertinence via Vertex AI Rapid Evaluation. |
