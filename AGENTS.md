@@ -17,4 +17,23 @@ This repository implements the **Google Cloud Elevate 2026 & EMEA SPARK** AI-Nat
 
 | Skill Name | Path | Description |
 | :--- | :--- | :--- |
-| **`rag-benchmark-and-ci`** | [`.agents/skills/rag-benchmark-and-ci/SKILL.md`](.agents/skills/rag-benchmark-and-ci/SKILL.md) | Pre-commit validation runbook (`gofmt -w .`, `go test -v ./...`, and Cloud Run Direct VPC Egress checks). |
+| **`rag-benchmark-and-ci`** | [`.agents/skills/rag-benchmark-and-ci/SKILL.md`](.agents/skills/rag-benchmark-and-ci/SKILL.md) | Pre-commit validation runbook (`gofmt -w .`, `go test -v -race ./...`, Zero-Dependency check, and Cloud Run Direct VPC Egress checks). |
+
+---
+
+## 🎬 Quick Demo Prompts (How to Trigger Each Agent Live)
+
+- **Trigger Runtime 4-Subagent CRAG Swarm (UI / SSE)**:
+  Click **`🤖 Agentic RAG`** in the web UI (`https://rag.hoffmannw.demo.altostrat.com`) or stream via `curl`:
+  ```bash
+  curl -N "https://rag.hoffmannw.demo.altostrat.com/api/chat/stream?mode=agentic&q=Architecture+Cloud+Armor+et+RRF"
+  ```
+- **Trigger `rag-eval-scientist` (IDE / CLI)**:
+  > `"Invoke rag-eval-scientist to audit the Reciprocal Rank Fusion (k=60) and GraderCriticAgent self-healing loop in src/main.go."`
+- **Trigger `go-concurrency-reviewer` (IDE / CLI)**:
+  > `"Invoke go-concurrency-reviewer to audit sync.RWMutex usage and SSE http.Flusher context cancellation in src/main.go."`
+- **Run the M1L1 Gatekeeper Script**:
+  ```bash
+  ./.agents/skills/rag-benchmark-and-ci/scripts/verify.sh
+  ```
+

@@ -26,11 +26,12 @@ The application runs as a standalone Go binary compiled with zero external depen
   - `gemini-3.1-pro-preview`: Deep reasoning model for complex architectural analysis and dense synthesis.
   - `gemini-3.5-flash-lite`: High-frequency, cost-sensitive operational workloads.
 - **Dynamic model switching**: Hot-swap active models via `/api/model/switch` without container restarts.
-- **Display modes**:
+- **Display modes (5 interactive views)**:
   - **Standard RAG**: Unified grounded response with retrieved source cards and telemetry.
   - **Split View**: Direct side-by-side comparison between raw lexical excerpts and grounded RAG synthesis.
   - **Model Arena (Dual-Model)**: Concurrent side-by-side inference with two distinct Gemini models on the exact same query.
   - **Triple View**: Three-column comparison (Model A, Model B, Classical Lexical Search).
+  - **🤖 Agentic RAG (4-Subagent CRAG Swarm)**: Self-correcting multi-agent pipeline (`QueryPlanner` ➔ `HybridRetriever` ➔ `GraderCritic` with *Auto-Heal* loop ➔ `CitationSynthesizer`) paired with a live **Trace Live** SSE drawer (`event: agent_step`).
 - **Real-time telemetry**: In-stream tracking of time-to-first-token (TTFT in ms), total generation latency, and exact token counts parsed from Vertex AI responses.
 
 ### 3. On-Demand GenAI Evaluation (Vertex AI Autorater)
@@ -65,6 +66,7 @@ Review the complete architectural diagram in GCP Draw format in [docs/architectu
                      ┌────────────────────────────┐
                      │ • Native Go HTTP Server    │
                      │ • Hybrid Search Engine     │
+                     │ • 4-Subagent CRAG Swarm    │
                      │ • Static Assets (embed.FS) │
                      └──────┬──────────────┬──────┘
                             │              │
@@ -90,7 +92,7 @@ All endpoints are served by the Go HTTP server on the configured port (`PORT`, d
 | `DELETE` | `/api/documents?id={id}` | `id` (document ID) | Deletes a document from the corpus and updates the Cloud Storage snapshot. |
 | `DELETE` | `/api/documents?all=true` | `all=true` | Purges all documents from memory and removes the Cloud Storage snapshot. |
 | `GET` | `/api/search/classic` | `q={query}` | Performs keyword-based lexical search and returns raw snippet excerpts. |
-| `GET` | `/api/chat/stream` | `q={query}`, `model={model_id}` | Streams the grounded RAG response via Server-Sent Events (SSE). |
+| `GET` | `/api/chat/stream` | `q={query}`, `model={model_id}`, `mode=agentic` *(opt.)* | Streams grounded RAG or 4-subagent CRAG responses via Server-Sent Events (`event: agent_step`, `retrieval`, `token`, `metrics`). |
 | `GET` | `/api/models` | None | Lists available Gemini models, specifications, and the active default model. |
 | `POST` | `/api/model/switch` | JSON body `{"model": "id"}` | Dynamically changes the active default Gemini model. |
 | `POST` | `/api/evaluate` | JSON body `{"query", "prediction", "context"}` | Runs an evaluation for Groundedness and QA Relevance via Vertex AI Rapid Evaluation. |
@@ -170,31 +172,83 @@ Refer to the [Deployment Guide](docs/DEPLOYMENT_GUIDE.md) for step-by-step produ
 
 ## 🤖 Dual-Layer Agentic Architecture (Runtime CRAG Swarm & M1L1 Skills)
 
-This repository implements a two-tier Agentic AI architecture:
+This repository implements a **two-tier complementary Agentic AI architecture**:
+- 🚀 **Layer 2 (Production Run-Time)**: A **4-Subagent Corrective RAG (CRAG) Swarm** embedded natively inside the Go binary (`src/main.go`), triggered in real time by end users from the web UI.
+- 🛠️ **Layer 1 (Engineering Build-Time)**: **2 Specialized Subagents and 1 M1L1 Skill** (`.agents/`), triggered inside the IDE/CLI during code development and before every `git commit`.
 
-### 1. Layer 2 (Production Runtime) — `🤖 Agentic RAG` UI Mode (4-Subagent CRAG Swarm)
-Available directly in the web interface (`https://rag.hoffmannw.demo.altostrat.com`) via the **`🤖 Agentic RAG`** header toggle with a live interactive **Trace Live** SSE panel (`event: agent_step`):
-1. **`QueryPlannerAgent` (Subagent 1)**: Decomposes complex user prompts into targeted sub-queries (lexical keywords + semantic concepts).
-2. **`HybridRetrieverAgent` (Subagent 2)**: Runs parallel **Dense Cosine (`gemini-embedding-001`) + Sparse BM25 with Reciprocal Rank Fusion ($k=60$)** across sub-queries and deduplicates retrieved chunks.
-3. **`GraderCriticAgent` (Subagent 3 — Corrective RAG)**: Evaluates chunk relevance (`/10`). If factual coverage is insufficient, triggers an automated **Self-Correction (Query Rewrite)** loop with expanded `top-K`.
-4. **`CitationSynthesizerAgent` (Subagent 4)**: Streams the final answer (`SSE`) with verified inline citations `[Doc: <Title>, Chunk #X]` and asynchronous LLM-as-a-Judge scoring.
+### 🔄 Sequence Diagram: How the 4 CRAG Subagents Enter into Action Live
 
-### 2. Layer 1 (AI-Assisted Engineering) — Repo Subagents & M1L1 Skill (`.agents/`)
-Automatically discovered by **Jetski**, **Antigravity**, and **Gemini CLI** (see [`AGENTS.md`](AGENTS.md)):
-- **Specialized Subagents (`.agents/agents/`)**:
-  - **[`rag-eval-scientist`](.agents/agents/rag-eval-scientist.md)**: **Reciprocal Rank Fusion (RRF $k=60$)** tuning, BM25 ($k_1=1.2, b=0.75$), and **LLM-as-a-Judge** (Faithfulness, Answer Relevance, Context Precision) auditing.
-  - **[`go-concurrency-reviewer`](.agents/agents/go-concurrency-reviewer.md)**: `sync.RWMutex` lock-contention audits, SSE `http.Flusher` goroutine leak prevention, and non-blocking GCS background synchronization.
-- **M1L1 Procedural Skill (`rag-benchmark-and-ci`)**:
-  - **Reference**: [`.agents/skills/rag-benchmark-and-ci/SKILL.md`](.agents/skills/rag-benchmark-and-ci/SKILL.md)
-  - **Automated Gatekeeper Script (`verify.sh`)**:
-    ```bash
-    ./.agents/skills/rag-benchmark-and-ci/scripts/verify.sh
-    ```
-    Runs `go vet ./...`, `go test -v -race ./...`, enforces the **Zero Third-Party Dependencies** rule on `src/go.mod`, and verifies the 4-subagent CRAG pipeline.
+When a user clicks the **`🤖 Agentic RAG`** button in the web interface (`https://rag.hoffmannw.demo.altostrat.com`) and submits a question, the backend streams each subagent's execution live over SSE (`event: agent_step`) into the **Trace Live** drawer:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as 👤 End User (Web UI)
+    participant UI as 🖥️ Trace Live Drawer (SSE)
+    participant A1 as 🧠 1. QueryPlannerAgent
+    participant A2 as 🔍 2. HybridRetrieverAgent
+    participant A3 as ⚖️ 3. GraderCriticAgent (CRAG)
+    participant A4 as ✍️ 4. CitationSynthesizerAgent
+
+    User->>UI: Toggles "🤖 Agentic RAG" & submits question
+    UI->>A1: GET /api/chat/stream?mode=agentic&q=...
+    A1-->>UI: SSE agent_step (status: done, 3 sub-queries planned)
+    A1->>A2: Dispatches lexical + semantic sub-queries
+    A2->>A2: Parallel Dense Cosine (768d) + BM25 search (RRF k=60)
+    A2-->>UI: SSE agent_step (status: done, N deduplicated chunks)
+    A2->>A3: Submits candidate chunks for factual grading
+    alt Insufficient Coverage (Score < 7/10) — Self-Healing Loop
+        A3-->>UI: SSE agent_step (status: heal, query rewrite + expanded Top-K)
+        A3->>A2: Re-runs HybridRetriever with rewritten query
+        A2-->>A3: Enriched document chunks
+    else Sufficient Coverage (Score >= 7/10)
+        A3-->>UI: SSE agent_step (status: done, relevance verified)
+    end
+    A3->>A4: Passes verified context chunks
+    A4-->>UI: Streams SSE tokens + inline citations [Doc, Chunk #X]
+```
+
+### 📊 Summary Matrix: Where and How Each Agent Operates
+
+| Agent / Skill | Layer | Where does it live? | How / When does it enter into action? | Role & Added Value |
+| :--- | :--- | :--- | :--- | :--- |
+| **`QueryPlannerAgent`** | **Layer 2** *(Run-Time)* | `src/main.go` (`runAgenticRAGPipeline`) | **Step 1** as soon as a query is submitted in `🤖 Agentic RAG` mode. | Decomposes complex, multi-faceted user questions into targeted lexical and semantic sub-queries. |
+| **`HybridRetrieverAgent`** | **Layer 2** *(Run-Time)* | `src/main.go` (`runAgenticRAGPipeline`) | **Step 2** after query planning (and re-invoked during *Auto-Heal*). | Executes parallel **Dense Cosine + Sparse BM25 with Reciprocal Rank Fusion ($k=60$)** and deduplicates chunks. |
+| **`GraderCriticAgent`** | **Layer 2** *(Run-Time)* | `src/main.go` (`runAgenticRAGPipeline`) | **Step 3** prior to any final LLM generation. | Grades chunk relevance (`/10`). Automatically triggers a **Self-Correction (Query Rewrite)** loop if coverage is insufficient. |
+| **`CitationSynthesizerAgent`** | **Layer 2** *(Run-Time)* | `src/main.go` (`runAgenticRAGPipeline`) | **Step 4** once chunks are certified by `GraderCriticAgent`. | Streams the grounded synthesis over SSE with inline citations `[Doc: <Title>, Chunk #X]` and triggers Vertex AI Autorater evaluation. |
+| **[`rag-eval-scientist`](.agents/agents/rag-eval-scientist.md)** | **Layer 1** *(Build-Time)* | `.agents/agents/rag-eval-scientist.md` | Inside **Jetski / Antigravity / Gemini CLI** when tuning RRF/BM25 weights or evaluation prompts. | Audits **RRF ($k=60$)**, BM25 ($k_1=1.2, b=0.75$), and **LLM-as-a-Judge** faithfulness/relevance metrics. |
+| **[`go-concurrency-reviewer`](.agents/agents/go-concurrency-reviewer.md)** | **Layer 1** *(Build-Time)* | `.agents/agents/go-concurrency-reviewer.md` | Inside **Jetski / Antigravity / Gemini CLI** before committing Go backend changes (`src/main.go`). | Audits `sync.RWMutex` lock discipline, SSE `r.Context().Done()` goroutine cleanup, and non-blocking GCS index persistence. |
+| **[`rag-benchmark-and-ci`](.agents/skills/rag-benchmark-and-ci/SKILL.md)** | **Layer 1** *(Gatekeeper)* | `.agents/skills/rag-benchmark-and-ci/scripts/verify.sh` | Executed in the terminal before every `git commit` or Cloud Run deployment. | Runs `go vet ./...`, `go test -v -race ./...`, enforces **Zero External Dependencies** (`src/go.mod`), and verifies the 4 CRAG agents. |
+
+### 🎬 3-Minute Customer Demo Playbook (CE Walkthrough)
+
+1. **Step 1 — Trigger the CRAG Swarm Live in the Browser (Run-Time)**:
+   - Open **[RAG Comparison Demo](https://rag.hoffmannw.demo.altostrat.com)** and click the **`🤖 Agentic RAG`** button in the top navigation bar.
+   - Copy-paste a multi-faceted technical prompt:
+     > `"Compare the Zero-Trust security perimeter (IAP, Cloud Armor) with the WORM backup strategy and explain how hybrid RAG prevents hallucinations."`
+   - **What to highlight on screen**:
+     - The **Trace Live** drawer expands automatically above the answer, streaming the 4 subagent cards in real time (`QueryPlanner` ➔ `HybridRetriever` ➔ `GraderCritic` ➔ `CitationSynthesizer`) with per-agent millisecond latency and generated sub-queries.
+     - Click **`⭐ Evaluate (Vertex AI)`** beneath the response to display the **Groundedness (`/5`)** and **QA Relevance (`/5`)** scores.
+
+2. **Step 2 — Inspect the Raw `event: agent_step` SSE Stream via `curl`**:
+   ```bash
+   curl -N "https://rag.hoffmannw.demo.altostrat.com/api/chat/stream?mode=agentic&q=Cloud+Armor+and+Hybrid+RRF"
+   ```
+   *(Streams live `event: agent_step` JSON payloads followed by synthesized response tokens).*
+
+3. **Step 3 — Showcase the Build-Time Engineering Subagents & M1L1 Gatekeeper**:
+   - In **Jetski / Antigravity / Gemini CLI**, copy-paste:
+     > `"Invoke rag-eval-scientist to audit the Reciprocal Rank Fusion (k=60) scoring and GraderCriticAgent self-correction threshold in src/main.go."`
+   - Run the M1L1 gatekeeper script:
+     ```bash
+     ./.agents/skills/rag-benchmark-and-ci/scripts/verify.sh
+     ```
 
 ---
 
 ## License
 
 This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
+
+
 
