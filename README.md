@@ -220,10 +220,35 @@ sequenceDiagram
 | **[`go-concurrency-reviewer`](.agents/agents/go-concurrency-reviewer.md)** | **Couche 1** *(Build-Time)* | `.agents/agents/go-concurrency-reviewer.md` | Dans **Jetski / Antigravity / Gemini CLI** avant de commiter du code Go (`src/main.go`). | Vérifie l'absence de deadlock `sync.RWMutex`, la fermeture propre des flux SSE (`r.Context().Done()`) et la synchro GCS asynchrone. |
 | **[`rag-benchmark-and-ci`](.agents/skills/rag-benchmark-and-ci/SKILL.md)** | **Couche 1** *(Gatekeeper)* | `.agents/skills/rag-benchmark-and-ci/scripts/verify.sh` | Exécuté dans le terminal avant chaque `git commit` ou déploiement Cloud Run. | Vérifie `go vet ./...`, `go test -v -race ./...`, la règle **Zero External Dependencies** (`src/go.mod`) et la présence des 4 agents CRAG. |
 
+### 🎬 Scénario de Démo Client en 3 Minutes (Playbook CE)
+
+1. **Étape 1 — Déclencher le Swarm CRAG en direct dans le navigateur (Run-Time)** :
+   - Ouvrez **[RAG Comparison Demo](https://rag.hoffmannw.demo.altostrat.com)** et cliquez sur le bouton **`🤖 Agentic RAG`** dans la barre supérieure.
+   - Copiez-collez une question multi-critères dans la barre de recherche :
+     > `"Compare l'architecture de sécurité Zero-Trust (IAP, Cloud Armor) avec la stratégie de sauvegarde WORM et explique comment le RAG hybride évite les hallucinations."`
+   - **Ce qu'il faut montrer à l'écran** :
+     - Le panneau **Trace Live** s'ouvre automatiquement au-dessus de la réponse et affiche en temps réel les 4 cartes d'agents (`QueryPlanner` ➔ `HybridRetriever` ➔ `GraderCritic` ➔ `CitationSynthesizer`) avec leur latence en millisecondes et les sous-requêtes générées.
+     - Cliquez ensuite sur **`⭐ Évaluer (Vertex AI)`** sous la réponse pour afficher le score **Groundedness (`/5`)** et **QA Relevance (`/5`)**.
+
+2. **Étape 2 — Déclencher un Agent en ligne de commande via `curl` (SSE Stream)** :
+   ```bash
+   curl -N "https://rag.hoffmannw.demo.altostrat.com/api/chat/stream?mode=agentic&q=Architecture+Cloud+Armor+et+RRF"
+   ```
+   *(Affiche en direct les événements `event: agent_step` JSON suivis des tokens streamés).*
+
+3. **Étape 3 — Démontrer les Agents d'Ingénierie & le Gatekeeper M1L1 (Build-Time)** :
+   - Dans **Jetski / Antigravity / Gemini CLI**, copiez-collez :
+     > `"Invoque rag-eval-scientist pour auditer la formule Reciprocal Rank Fusion (k=60) et les seuils du GraderCriticAgent dans src/main.go."`
+   - Puis lancez le script gatekeeper M1L1 :
+     ```bash
+     ./.agents/skills/rag-benchmark-and-ci/scripts/verify.sh
+     ```
+
 ---
 
 ## Licence
 
 Ce projet est distribué sous licence Apache 2.0. Consultez le fichier [LICENSE](LICENSE) pour plus d'informations.
+
 
 

@@ -220,10 +220,35 @@ sequenceDiagram
 | **[`go-concurrency-reviewer`](.agents/agents/go-concurrency-reviewer.md)** | **Layer 1** *(Build-Time)* | `.agents/agents/go-concurrency-reviewer.md` | Inside **Jetski / Antigravity / Gemini CLI** before committing Go backend changes (`src/main.go`). | Audits `sync.RWMutex` lock discipline, SSE `r.Context().Done()` goroutine cleanup, and non-blocking GCS index persistence. |
 | **[`rag-benchmark-and-ci`](.agents/skills/rag-benchmark-and-ci/SKILL.md)** | **Layer 1** *(Gatekeeper)* | `.agents/skills/rag-benchmark-and-ci/scripts/verify.sh` | Executed in the terminal before every `git commit` or Cloud Run deployment. | Runs `go vet ./...`, `go test -v -race ./...`, enforces **Zero External Dependencies** (`src/go.mod`), and verifies the 4 CRAG agents. |
 
+### 🎬 3-Minute Customer Demo Playbook (CE Walkthrough)
+
+1. **Step 1 — Trigger the CRAG Swarm Live in the Browser (Run-Time)**:
+   - Open **[RAG Comparison Demo](https://rag.hoffmannw.demo.altostrat.com)** and click the **`🤖 Agentic RAG`** button in the top navigation bar.
+   - Copy-paste a multi-faceted technical prompt:
+     > `"Compare the Zero-Trust security perimeter (IAP, Cloud Armor) with the WORM backup strategy and explain how hybrid RAG prevents hallucinations."`
+   - **What to highlight on screen**:
+     - The **Trace Live** drawer expands automatically above the answer, streaming the 4 subagent cards in real time (`QueryPlanner` ➔ `HybridRetriever` ➔ `GraderCritic` ➔ `CitationSynthesizer`) with per-agent millisecond latency and generated sub-queries.
+     - Click **`⭐ Evaluate (Vertex AI)`** beneath the response to display the **Groundedness (`/5`)** and **QA Relevance (`/5`)** scores.
+
+2. **Step 2 — Inspect the Raw `event: agent_step` SSE Stream via `curl`**:
+   ```bash
+   curl -N "https://rag.hoffmannw.demo.altostrat.com/api/chat/stream?mode=agentic&q=Cloud+Armor+and+Hybrid+RRF"
+   ```
+   *(Streams live `event: agent_step` JSON payloads followed by synthesized response tokens).*
+
+3. **Step 3 — Showcase the Build-Time Engineering Subagents & M1L1 Gatekeeper**:
+   - In **Jetski / Antigravity / Gemini CLI**, copy-paste:
+     > `"Invoke rag-eval-scientist to audit the Reciprocal Rank Fusion (k=60) scoring and GraderCriticAgent self-correction threshold in src/main.go."`
+   - Run the M1L1 gatekeeper script:
+     ```bash
+     ./.agents/skills/rag-benchmark-and-ci/scripts/verify.sh
+     ```
+
 ---
 
 ## License
 
 This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
+
 
 
