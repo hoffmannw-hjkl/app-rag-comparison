@@ -41,25 +41,25 @@
         <mxCell id="cell_13" value="&lt;b&gt;[GcpStorageBucket] Document Ingestor&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;PDF CMap / DOCX / TXT&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_3">
           <mxGeometry x="19" y="364.8571428571429" width="196" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="cell_14" value="&lt;b&gt;[GoogleAgents] 1. QueryPlannerAgent&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;Decomposes Sub-Queries&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_5">
+        <mxCell id="cell_14" value="&lt;b&gt;[GoogleAgents] 1. QueryPlanner&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;Decomposes Sub-Queries&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_5">
           <mxGeometry x="34" y="44" width="196" height="60" as="geometry" />
         </mxCell>
         <mxCell id="cell_15" value="&lt;b&gt;[Search] 2. HybridRetriever&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;0.7 Cosine + 0.3 BM25&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_5">
           <mxGeometry x="34" y="128" width="196" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="cell_16" value="&lt;b&gt;[ShieldCheck] 3. GraderCriticAgent&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;Filters Noise Chunks&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_6">
+        <mxCell id="cell_16" value="&lt;b&gt;[ShieldCheck] 3. GraderCritic&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;Filters Noise Chunks&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_6">
           <mxGeometry x="26.5" y="44" width="196" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="cell_17" value="&lt;b&gt;[Gemini] 4. CitationSynthesizer&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;Grounded SSE Stream&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_6">
+        <mxCell id="cell_17" value="&lt;b&gt;[Gemini] 4. Synthesizer&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;Grounded SSE Stream&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_6">
           <mxGeometry x="26.5" y="128" width="196" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="cell_18" value="&lt;b&gt;[Gemini] Gemini 3.5 / 3.8 Flash&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;Sub-400ms TTFT&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_8">
+        <mxCell id="cell_18" value="&lt;b&gt;[Gemini] Gemini 3.5 Flash&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;Sub-400ms TTFT&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_8">
           <mxGeometry x="18" y="44" width="196" height="60" as="geometry" />
         </mxCell>
         <mxCell id="cell_19" value="&lt;b&gt;[VertexAI] Gemini 3.1 Pro&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;Deep Frontier Reasoning&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_8">
           <mxGeometry x="18" y="128" width="196" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="cell_20" value="&lt;b&gt;[SecurityCommandCenter] Vertex AI Autorater&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;Groundedness &amp; Relevance /5&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_9">
+        <mxCell id="cell_20" value="&lt;b&gt;[SecurityCommandCenter] Vertex Autorater&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;Groundedness &amp; Relevance /5&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_9">
           <mxGeometry x="23" y="44" width="196" height="60" as="geometry" />
         </mxCell>
         <mxCell id="cell_21" value="&lt;b&gt;[CloudBilling] Real-Time FinOps&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;Token Cost (~$0.00011)&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_9">
@@ -74,7 +74,7 @@
         <mxCell id="cell_24" value="&lt;b&gt;[Cpu] Go Hybrid Engine&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;Cosine (0.7) + BM25 (0.3)&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_10">
           <mxGeometry x="450" y="68" width="196" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="cell_25" value="&lt;b&gt;[CloudLogging] Cloud Logging &amp; Trace&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;SSE &amp; Eval Telemetry&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_10">
+        <mxCell id="cell_25" value="&lt;b&gt;[CloudLogging] Cloud Logging&lt;/b&gt;&lt;br&gt;&lt;font color=&#39;#64748B&#39; size=&#39;1&#39;&gt;SSE &amp; Eval Telemetry&lt;/font&gt;" style="rounded=1;arcSize=15;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dadce0;strokeWidth=1;fontColor=#202124;fontSize=13;shadow=1;" vertex="1" parent="cell_10">
           <mxGeometry x="666" y="68" width="196" height="60" as="geometry" />
         </mxCell>
         <mxCell id="edge_26" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#1a73e8;strokeWidth=2;fontColor=#334155;fontSize=11;endArrow=block;endFill=1;" edge="1" parent="1" source="cell_11" target="cell_12">

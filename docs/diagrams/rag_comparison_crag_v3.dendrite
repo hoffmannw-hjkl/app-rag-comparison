@@ -53,15 +53,15 @@ Zone @RAG_Comparison_Architecture {
     Zone @CRAG_Plan_Retrieve {
       title: "Plan & Multi-Hop Retrieve", layout: column, gap: 16, padding: 14, align: "center",
       fill: "#ffffff", stroke: "#a142f4", cornerRadius: 10, icon: "Sparkles", iconSize: 18
-      [agent_planner: "1. QueryPlannerAgent" | "Decomposes Sub-Queries"] { style: @ProductCard, icon: "GoogleAgents" }
+      [agent_planner: "1. QueryPlanner" | "Decomposes Sub-Queries"] { style: @ProductCard, icon: "GoogleAgents" }
       [agent_retriever: "2. HybridRetriever" | "0.7 Cosine + 0.3 BM25"] { style: @ProductCard, icon: "Search" }
     }
 
     Zone @CRAG_Grade_Synthesize {
       title: "CRAG Critic & Synthesis", layout: column, gap: 16, padding: 14, align: "center",
       fill: "#ffffff", stroke: "#a142f4", cornerRadius: 10, icon: "VertexAI", iconSize: 18
-      [agent_grader: "3. GraderCriticAgent" | "Filters Noise Chunks"] { style: @ProductCard, icon: "ShieldCheck" }
-      [agent_synth: "4. CitationSynthesizer" | "Grounded SSE Stream"] { style: @ProductCard, icon: "Gemini" }
+      [agent_grader: "3. GraderCritic" | "Filters Noise Chunks"] { style: @ProductCard, icon: "ShieldCheck" }
+      [agent_synth: "4. Synthesizer" | "Grounded SSE Stream"] { style: @ProductCard, icon: "Gemini" }
     }
   }
 
@@ -74,14 +74,14 @@ Zone @RAG_Comparison_Architecture {
     Zone @MultiModel_Arena {
       title: "Multi-Model Arena", layout: column, gap: 16, padding: 14, align: "center",
       fill: "#ffffff", stroke: "#5b9bf3", cornerRadius: 10, icon: "Gemini", iconSize: 18
-      [gemini_flash: "Gemini 3.5 / 3.8 Flash" | "Sub-400ms TTFT"] { style: @ProductCard, icon: "Gemini" }
+      [gemini_flash: "Gemini 3.5 Flash" | "Sub-400ms TTFT"] { style: @ProductCard, icon: "Gemini" }
       [gemini_pro: "Gemini 3.1 Pro" | "Deep Frontier Reasoning"] { style: @ProductCard, icon: "VertexAI" }
     }
 
     Zone @Autorater_And_Finops {
       title: "Quality & FinOps Audit", layout: column, gap: 16, padding: 14, align: "center",
       fill: "#ffffff", stroke: "#5b9bf3", cornerRadius: 10, icon: "Activity", iconSize: 18
-      [vertex_autorater: "Vertex AI Autorater" | "Groundedness & Relevance /5"] { style: @ProductCard, icon: "SecurityCommandCenter" }
+      [vertex_autorater: "Vertex Autorater" | "Groundedness & Relevance /5"] { style: @ProductCard, icon: "SecurityCommandCenter" }
       [finops_badge: "Real-Time FinOps" | "Token Cost (~$0.00011)"] { style: @ProductCard, icon: "CloudBilling" }
     }
   }
@@ -94,7 +94,7 @@ Zone @RAG_Comparison_Architecture {
     [gcs_corpus_bucket: "Cloud Storage UBLA" | "Corpus & JSONL Index"] { style: @ProductCard, icon: "GcpStorageBucket" }
     [vertex_embeddings: "Vertex Embeddings" | "text-embedding-004 (768d)"] { style: @ProductCard, icon: "AIPlatform" }
     [hybrid_engine: "Go Hybrid Engine" | "Cosine (0.7) + BM25 (0.3)"] { style: @ProductCard, icon: "Cpu" }
-    [cloud_logging_eval: "Cloud Logging & Trace" | "SSE & Eval Telemetry"] { style: @ProductCard, icon: "CloudLogging" }
+    [cloud_logging_eval: "Cloud Logging" | "SSE & Eval Telemetry"] { style: @ProductCard, icon: "CloudLogging" }
   }
 }
 
