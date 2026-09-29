@@ -212,26 +212,40 @@
 
   <!-- Modal Architecture GCP Live (X-Ray) -->
   <div id="gcp-xray-modal" class="fixed inset-0 bg-black/75 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
-    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-4xl w-full p-6 space-y-5 shadow-2xl max-h-[90vh] overflow-y-auto">
-      <div class="flex items-start justify-between border-b border-slate-800 pb-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-6xl w-full p-6 space-y-5 shadow-2xl max-h-[92vh] overflow-y-auto">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-4">
         <div>
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2 flex-wrap">
             <span class="text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">
               Google Cloud Well-Architected • Live X-Ray
             </span>
             <span class="text-[11px] font-mono px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
               Région : europe-west1 (Belgique)
             </span>
+            <span class="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+              Dendrite v3.3 Bento 16:9
+            </span>
           </div>
-          <h3 class="font-extrabold text-white text-lg mt-1.5">🏗️ Architecture GCP Sous le Capot & Deep-Links Console</h3>
-          <p class="text-xs text-slate-400 mt-0.5">Visualisez le pipeline temps réel d'une requête RAG / Agentic CRAG à travers les services managés Google Cloud.</p>
+          <h3 class="font-extrabold text-white text-lg mt-1.5">🏗️ Architecture GCP Sous le Capot & Schéma Interactif Dendrite v3.3</h3>
+          <p class="text-xs text-slate-400 mt-0.5">Visualisez les 6 briques managées avec Deep-Links Console GCP ou explorez le schéma d'architecture interactif Dendrite v3.3 (Bento Matrix).</p>
         </div>
-        <button onclick="closeGcpXrayModal()" class="text-slate-400 hover:text-white w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center">
-          <i class="fa-solid fa-xmark"></i>
-        </button>
+        <div class="flex items-center gap-2 shrink-0">
+          <div class="inline-flex rounded-xl bg-slate-950 p-1 border border-slate-800">
+            <button id="btn-xray-tab-cards" onclick="switchRagXrayTab('cards')" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 text-white shadow-xs transition cursor-pointer">
+              🔗 Briques & Deep-Links GCP
+            </button>
+            <button id="btn-xray-tab-dendrite" onclick="switchRagXrayTab('dendrite')" class="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-400 hover:text-white transition cursor-pointer">
+              🗺️ Schéma Interactif Dendrite v3.3
+            </button>
+          </div>
+          <button onclick="closeGcpXrayModal()" class="text-slate-400 hover:text-white w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center cursor-pointer">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-3.5 text-xs">
+      <!-- Vue 1 : 6 Briques GCP -->
+      <div id="xray-cards-view" class="grid grid-cols-1 md:grid-cols-3 gap-3.5 text-xs">
         <div class="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5">
           <div class="flex items-center justify-between">
             <span class="font-bold text-white">1. Cloud Armor WAF & IAP</span>
@@ -299,14 +313,24 @@
         </div>
       </div>
 
+      <!-- Vue 2 : Schéma Interactif Dendrite v3.3 (Bento Matrix 16:9) -->
+      <div id="xray-dendrite-view" class="hidden">
+        <iframe id="xray-dendrite-iframe" data-src="/dendrite-architecture.html" title="Schéma d'Architecture Dendrite v3.3 RAG Comparison" class="w-full h-[64vh] rounded-xl border border-slate-700 bg-white shadow-inner"></iframe>
+      </div>
+
       <div class="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
         <div class="text-slate-300">
           <strong class="text-white">💡 Message Clé Client (Valeur GCP) :</strong> Déploiement Serverless en 1 commande, latence premier token &lt; 500 ms avec Gemini Flash, et zéro hallucination grâce au Grounding vérifié.
         </div>
-        <button onclick="closeGcpXrayModal(); runQuickScenario('agentic', 'Compare les règles de sécurité Cloud Armor WAF, la politique de rétention WORM Backup DR et les seuils d alerte FinOps');"
-                class="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold shrink-0 transition cursor-pointer">
-          Lancer Démo Agentic CRAG ➔
-        </button>
+        <div class="flex items-center gap-2 shrink-0">
+          <button onclick="switchRagXrayTab('dendrite')" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 font-bold transition cursor-pointer border border-slate-700">
+            🗺️ Voir Schéma Dendrite v3.3
+          </button>
+          <button onclick="closeGcpXrayModal(); runQuickScenario('agentic', 'Compare les règles de sécurité Cloud Armor WAF, la politique de rétention WORM Backup DR et les seuils d alerte FinOps');"
+                  class="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold transition cursor-pointer">
+            Lancer Démo Agentic CRAG ➔
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -839,6 +863,29 @@
       if (m) {
         m.classList.add('hidden');
         m.classList.remove('flex');
+      }
+    }
+
+    function switchRagXrayTab(tab) {
+      const cardsView = document.getElementById('xray-cards-view');
+      const dendriteView = document.getElementById('xray-dendrite-view');
+      const btnCards = document.getElementById('btn-xray-tab-cards');
+      const btnDendrite = document.getElementById('btn-xray-tab-dendrite');
+      const iframe = document.getElementById('xray-dendrite-iframe');
+
+      if (tab === 'dendrite') {
+        if (cardsView) cardsView.classList.add('hidden');
+        if (dendriteView) dendriteView.classList.remove('hidden');
+        if (btnDendrite) btnDendrite.className = 'px-3 py-1.5 rounded-lg text-xs font-bold bg-indigo-600 text-white shadow-xs transition cursor-pointer';
+        if (btnCards) btnCards.className = 'px-3 py-1.5 rounded-lg text-xs font-bold text-slate-400 hover:text-white transition cursor-pointer';
+        if (iframe && !iframe.getAttribute('src')) {
+          iframe.setAttribute('src', iframe.getAttribute('data-src'));
+        }
+      } else {
+        if (dendriteView) dendriteView.classList.add('hidden');
+        if (cardsView) cardsView.classList.remove('hidden');
+        if (btnCards) btnCards.className = 'px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 text-white shadow-xs transition cursor-pointer';
+        if (btnDendrite) btnDendrite.className = 'px-3 py-1.5 rounded-lg text-xs font-bold text-slate-400 hover:text-white transition cursor-pointer';
       }
     }
 
