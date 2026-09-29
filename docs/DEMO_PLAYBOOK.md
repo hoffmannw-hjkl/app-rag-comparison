@@ -13,6 +13,8 @@ Chaque étape détaille :
 
 ---
 
+[![RAG Comparison — Hybrid RAG & 4-Agent CRAG Swarm Comparator](diagrams/rag_comparison_crag_v3.png)](diagrams/rag_comparison_crag_v3.png)
+
 ## ⏱️ Vue d'Ensemble du Scénario (Durée : 10 à 12 min)
 
 ```mermaid

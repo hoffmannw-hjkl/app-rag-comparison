@@ -16,6 +16,12 @@ Ce document centralise les **schémas d'architecture as-code** de **RAG Comparis
 
 ---
 
+## 🖼️ Aperçu Visuel (Dendrite v3.3 — Bento Matrix 16:9)
+
+[![RAG Comparison — Hybrid RAG & 4-Agent CRAG Swarm Comparator](diagrams/rag_comparison_crag_v3.png)](diagrams/rag_comparison_crag_v3.png)
+
+---
+
 ## 1. Spécification Dendrite v3.3 (`docs/diagrams/rag_comparison_crag_v3.dendrite`)
 
 > **Sous-titre exécutif** : *Go 1.24 Serverless Engine on Cloud Run Gen2, Vertex AI Gemini 2.5 Flash, text-embedding-004 (768d), RRF k=60, CRAG & FinOps Telemetry*

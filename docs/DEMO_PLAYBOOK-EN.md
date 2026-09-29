@@ -13,6 +13,8 @@ Every stage specifies:
 
 ---
 
+[![RAG Comparison — Hybrid RAG & 4-Agent CRAG Swarm Comparator](diagrams/rag_comparison_crag_v3.png)](diagrams/rag_comparison_crag_v3.png)
+
 ## ⏱️ Demo Flow Overview (Duration: 10–12 min)
 
 ```mermaid
