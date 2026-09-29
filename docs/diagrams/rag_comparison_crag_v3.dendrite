@@ -1,0 +1,116 @@
+theme: "gcp-architecture"
+renderOrder: nodes-first
+direction: right
+spacing: 26
+
+const GcpBlue = "#1a73e8"
+const GcpGreen = "#1e8e3e"
+const DarkSlate = "#202124"
+const SubText = "#5f6368"
+const CardBorder = "#dadce0"
+const SurfaceWhite = "#ffffff"
+
+Style @ProductCard {
+  width: 196, height: 60,
+  fill: $SurfaceWhite, strokeColor: $CardBorder, strokeWidth: 1, borderRadius: 8,
+  fontColor: $DarkSlate, subFontColor: $SubText,
+  fontSize: 13, subFontSize: 10.5, labelWeight: bold,
+  textAlign: "left", textVAlign: "middle",
+  iconPosition: "left", iconSize: 26, padding: 10, shadow: true
+}
+Style @ZoneBlue   { fill: "#e8f0fe", stroke: "#5b9bf3", borderRadius: 12 }
+Style @ZoneGreen  { fill: "#e6f4ea", stroke: "#68b88e", borderRadius: 12 }
+Style @ZonePeach  { fill: "#fce8e6", stroke: "#f28b82", borderRadius: 12 }
+Style @ZonePurple { fill: "#f3e8fd", stroke: "#a142f4", borderRadius: 12 }
+
+Zone @RAG_Comparison_Architecture {
+  title: "GCP AI Foundation — Hybrid RAG & 4-Agent CRAG Swarm Comparator"
+  subtitle: "Cloud Run v2 (Go 1.24 Zero-CVE) • Real-Time SSE Streaming • Vertex AI Autorater (europe-west1)"
+  icon: "GoogleCloud", iconSize: 24
+  layout: matrix, gap: 24, padding: 24, align: "stretch"
+  fill: "#f8fafd", stroke: "#dadce0", cornerRadius: 14
+  areas: [
+    "upstream  archA  archB",
+    "upstream  store  store"
+  ]
+
+  Zone @Upstream_Edge {
+    title: "1. Zero-Trust Ingress"
+    subtitle: "Cloud Run v2 SSE"
+    style: @ZonePeach, area: "upstream"
+    layout: column, gap: 20, padding: 18, align: "center", icon: "CloudArmor", iconSize: 20
+    [armor_iap: "Cloud Armor & IAP" | "WAF L7 + Zero-Trust"] { style: @ProductCard, icon: "CloudArmor" }
+    [cloud_run_go: "Cloud Run v2 (Go)" | "SSE Router & X-Ray UI"] { style: @ProductCard, icon: "GcpCloudRun" }
+    [doc_ingestor: "Document Ingestor" | "PDF CMap / DOCX / TXT"] { style: @ProductCard, icon: "GcpStorageBucket" }
+  }
+
+  Zone @Path_A_Agentic_CRAG {
+    title: "2A. Mode Agentic RAG (4-Subagent CRAG Swarm)"
+    subtitle: "Multi-Hop Decomposition & Self-Correction"
+    style: @ZonePurple, area: "archA"
+    layout: row, gap: 22, padding: 18, align: "stretch", icon: "GoogleAgents", iconSize: 20
+
+    Zone @CRAG_Plan_Retrieve {
+      title: "Plan & Multi-Hop Retrieve", layout: column, gap: 16, padding: 14, align: "center",
+      fill: "#ffffff", stroke: "#a142f4", cornerRadius: 10, icon: "Sparkles", iconSize: 18
+      [agent_planner: "1. QueryPlannerAgent" | "Decomposes Sub-Queries"] { style: @ProductCard, icon: "GoogleAgents" }
+      [agent_retriever: "2. HybridRetriever" | "0.7 Cosine + 0.3 BM25"] { style: @ProductCard, icon: "Search" }
+    }
+
+    Zone @CRAG_Grade_Synthesize {
+      title: "CRAG Critic & Synthesis", layout: column, gap: 16, padding: 14, align: "center",
+      fill: "#ffffff", stroke: "#a142f4", cornerRadius: 10, icon: "VertexAI", iconSize: 18
+      [agent_grader: "3. GraderCriticAgent" | "Filters Noise Chunks"] { style: @ProductCard, icon: "ShieldCheck" }
+      [agent_synth: "4. CitationSynthesizer" | "Grounded SSE Stream"] { style: @ProductCard, icon: "Gemini" }
+    }
+  }
+
+  Zone @Path_B_Arena_And_Eval {
+    title: "2B. Standard RAG, Model Arena & Autorater Judge"
+    subtitle: "Flash vs. Pro Benchmark & LLM-as-a-Judge (/5)"
+    style: @ZoneBlue, area: "archB"
+    layout: row, gap: 22, padding: 18, align: "stretch", icon: "VertexAI", iconSize: 20
+
+    Zone @MultiModel_Arena {
+      title: "Multi-Model Arena", layout: column, gap: 16, padding: 14, align: "center",
+      fill: "#ffffff", stroke: "#5b9bf3", cornerRadius: 10, icon: "Gemini", iconSize: 18
+      [gemini_flash: "Gemini 3.5 / 3.8 Flash" | "Sub-400ms TTFT"] { style: @ProductCard, icon: "Gemini" }
+      [gemini_pro: "Gemini 3.1 Pro" | "Deep Frontier Reasoning"] { style: @ProductCard, icon: "VertexAI" }
+    }
+
+    Zone @Autorater_And_Finops {
+      title: "Quality & FinOps Audit", layout: column, gap: 16, padding: 14, align: "center",
+      fill: "#ffffff", stroke: "#5b9bf3", cornerRadius: 10, icon: "Activity", iconSize: 18
+      [vertex_autorater: "Vertex AI Autorater" | "Groundedness & Relevance /5"] { style: @ProductCard, icon: "SecurityCommandCenter" }
+      [finops_badge: "Real-Time FinOps" | "Token Cost (~$0.00011)"] { style: @ProductCard, icon: "CloudBilling" }
+    }
+  }
+
+  Zone @Shared_Data_Foundation {
+    title: "3. Shared Hybrid Vector Index & Cloud Storage Persistence (Direct VPC Egress)"
+    subtitle: "In-Memory 768-dim Cosine + BM25 Index Backed by Cloud Storage UBLA"
+    style: @ZoneGreen, area: "store"
+    layout: row, gap: 20, padding: 18, align: "center", icon: "GcpDatabase", iconSize: 20
+    [gcs_corpus_bucket: "Cloud Storage UBLA" | "Corpus & JSONL Index"] { style: @ProductCard, icon: "GcpStorageBucket" }
+    [vertex_embeddings: "Vertex Embeddings" | "text-embedding-004 (768d)"] { style: @ProductCard, icon: "AIPlatform" }
+    [hybrid_engine: "Go Hybrid Engine" | "Cosine (0.7) + BM25 (0.3)"] { style: @ProductCard, icon: "Cpu" }
+    [cloud_logging_eval: "Cloud Logging & Trace" | "SSE & Eval Telemetry"] { style: @ProductCard, icon: "CloudLogging" }
+  }
+}
+
+[armor_iap] -> [cloud_run_go] { sourceAnchor: "bottom", targetAnchor: "top", color: $GcpBlue, strokeWidth: 2, curve: "step", sequenceBadge: "1", badgeFill: $GcpBlue, badgeFontColor: $SurfaceWhite }
+[cloud_run_go] -> [doc_ingestor] { sourceAnchor: "bottom", targetAnchor: "top", color: $GcpBlue, strokeWidth: 2, curve: "step" }
+[cloud_run_go] -> [agent_planner] { label: "Agentic SSE", sourceAnchor: "right", targetAnchor: "left", color: $GcpBlue, strokeWidth: 2, curve: "step", sequenceBadge: "2", badgeFill: $GcpBlue, badgeFontColor: $SurfaceWhite }
+[agent_planner] -> [agent_retriever] { label: "Sub-Queries", sourceAnchor: "bottom", targetAnchor: "top", color: $GcpBlue, strokeWidth: 2, curve: "step" }
+[agent_retriever] -> [agent_grader] { label: "Top-K Chunks", sourceAnchor: "right", targetAnchor: "left", color: $GcpBlue, strokeWidth: 2, curve: "step" }
+[agent_grader] -> [agent_synth] { label: "Verified", sourceAnchor: "bottom", targetAnchor: "top", color: $GcpBlue, strokeWidth: 2, curve: "step" }
+
+[agent_synth] -> [gemini_flash] { label: "Compare", sourceAnchor: "right", targetAnchor: "left", color: $GcpBlue, strokeWidth: 1.8, dashed: true, curve: "step" }
+[gemini_flash] -> [gemini_pro] { label: "Arena", sourceAnchor: "bottom", targetAnchor: "top", color: $GcpBlue, strokeWidth: 1.8, curve: "step" }
+[gemini_flash] -> [vertex_autorater] { label: "Judge /5", sourceAnchor: "right", targetAnchor: "left", color: $GcpGreen, strokeWidth: 2, curve: "step", sequenceBadge: "3", badgeFill: $GcpGreen, badgeFontColor: $SurfaceWhite }
+[vertex_autorater] -> [finops_badge] { label: "Token Cost", sourceAnchor: "bottom", targetAnchor: "top", color: $GcpGreen, strokeWidth: 1.8, curve: "step" }
+
+[doc_ingestor] -> [gcs_corpus_bucket] { label: "Persist JSONL", sourceAnchor: "bottom", targetAnchor: "left", color: $GcpBlue, strokeWidth: 2, curve: "step" }
+[agent_retriever] -> [vertex_embeddings] { label: "768d Vector", sourceAnchor: "bottom", targetAnchor: "top", color: $GcpBlue, strokeWidth: 2, curve: "step" }
+[agent_grader] -> [hybrid_engine] { label: "BM25 + Cos", sourceAnchor: "bottom", targetAnchor: "top", color: $GcpBlue, strokeWidth: 2, curve: "step" }
+[finops_badge] -> [cloud_logging_eval] { label: "Audit Logs", sourceAnchor: "bottom", targetAnchor: "top", color: $GcpGreen, strokeWidth: 1.8, dashed: true, curve: "step" }
